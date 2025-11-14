@@ -1,0 +1,23 @@
+# Web Framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+
+# Database
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
+alembic==1.15.2
+
+# Data & Financial
+yfinance==0.2.51
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.14.1
+py_vollib==1.0.1
+
+# Background Jobs
+APScheduler==3.11.1
+
+# Utilities
+python-dotenv==1.0.1
+pytz==2025.1

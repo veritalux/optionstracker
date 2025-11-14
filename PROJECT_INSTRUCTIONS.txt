@@ -1,0 +1,189 @@
+Project: Options Trading Analytics Dashboard
+
+PROJECT OVERVIEW
+================
+This is a full-stack web application designed to help traders (specifically Nick, a finance professional) track and analyze stock options pricing over 1-2 week periods. The goal is to identify premium/discount opportunities by monitoring implied volatility, Greeks, and pricing inefficiencies in real-time.
+
+ARCHITECTURE & TECH STACK
+=========================
+
+Backend (Python)
+- Framework: FastAPI for REST API endpoints
+- Database: SQLite with SQLAlchemy ORM for local data storage
+- Data Sources: Yahoo Finance API via `yfinance` library
+- Options Calculations: `py_vollib` for Black-Scholes model and Greeks
+- Scheduling: APScheduler for periodic data fetching
+- Key Libraries: pandas, numpy, scipy for financial calculations
+
+Frontend (React)
+- Framework: React with modern hooks
+- Styling: Tailwind CSS for responsive design
+- Charts: Chart.js or Plotly for financial visualizations
+- State Management: React Context/useState for data flow
+
+Deployment Requirements
+- Platform: Apple Silicon macOS 15.2 compatible
+- Local Development: Designed to run locally with minimal setup
+
+FILE STRUCTURE
+==============
+options-tracker/
+├── backend/
+│   ├── models.py           # SQLAlchemy database models
+│   ├── data_fetcher.py     # Yahoo Finance API integration
+│   ├── calculations.py     # Options pricing & Greeks calculations
+│   ├── app.py             # FastAPI main application
+│   ├── scheduler.py       # Background data update tasks
+│   └── opportunities.py   # Trading opportunity detection
+├── frontend/
+│   ├── src/
+│   │   ├── components/    # React components
+│   │   ├── pages/         # Main page layouts
+│   │   ├── hooks/         # Custom React hooks
+│   │   └── utils/         # Helper functions
+│   ├── package.json       # npm dependencies
+│   └── public/            # Static assets
+├── requirements.txt       # Python dependencies
+└── README.md             # Setup instructions
+
+DATABASE SCHEMA
+===============
+The application uses 7 main tables:
+
+1. symbols - Watchlist of stocks (AAPL, MSFT, SPY, etc.)
+2. stock_prices - Historical stock price data
+3. option_contracts - Options contract specifications
+4. option_prices - Time series of option pricing data
+5. iv_analysis - Implied volatility analysis and rankings
+6. trading_opportunities - Automated opportunity detection
+7. user_watchlists - Personalized symbol tracking
+
+CORE FINANCIAL CALCULATIONS
+============================
+
+Implied Volatility Analysis
+- IV Rank: Current IV vs 1-year high/low range (0-100%)
+- IV Percentile: Current IV vs historical distribution
+- IV Skew: Put vs call IV differences
+
+Greeks Tracking
+- Delta: Price sensitivity to underlying movement
+- Theta: Time decay per day
+- Gamma: Delta sensitivity to price changes
+- Vega: Volatility sensitivity
+- Rho: Interest rate sensitivity
+
+Opportunity Identification
+- Options trading >20% above/below theoretical value
+- IV Rank >80% (expensive) or <20% (cheap)
+- Unusual volume (>150% of average)
+- High time value near expiration
+
+API ENDPOINTS STRUCTURE
+=======================
+
+Stock Data
+- GET /api/stocks - List watchlist symbols
+- GET /api/stocks/{symbol}/price - Current stock price
+- GET /api/stocks/{symbol}/history - Price history
+
+Options Data
+- GET /api/options/{symbol}/chain - Full options chain
+- GET /api/options/{symbol}/analysis - IV analysis
+- GET /api/options/opportunities - Current trading opportunities
+
+Watchlist Management
+- POST /api/watchlist - Add symbol to watchlist
+- DELETE /api/watchlist/{symbol} - Remove symbol
+- GET /api/watchlist - Get current watchlist
+
+KEY FEATURES FOR NICK
+=====================
+
+Daily Workflow Support
+1. Morning Dashboard: Overnight changes, new opportunities
+2. Deep Analysis: Drill-down into specific options chains
+3. Opportunity Scanner: Real-time alerts for mispriced options
+4. Historical Tracking: Performance of identified opportunities
+
+Trading-Focused Metrics
+- Options with IV Rank >80% (potential sells)
+- Options with IV Rank <20% (potential buys)
+- Time decay acceleration near expiration
+- Volume/Open Interest anomalies
+
+DATA UPDATE STRATEGY
+====================
+- Market Hours: Every 15 minutes via scheduled tasks
+- After Hours: End-of-day comprehensive update
+- Weekends: Historical analysis and opportunity review
+- Rate Limiting: Respect Yahoo Finance API limits
+
+DEVELOPMENT PRIORITIES
+======================
+
+Phase 1 (Current MVP)
+- [x] Database models and basic data fetching
+- [x] Yahoo Finance integration
+- [ ] FastAPI REST endpoints
+- [ ] Basic React frontend
+- [ ] Options calculations with py_vollib
+
+Phase 2 (Enhancement)
+- [ ] Historical IV analysis
+- [ ] Opportunity scoring algorithm
+- [ ] Real-time alerts
+- [ ] Interactive charts
+
+Phase 3 (Advanced)
+- [ ] Portfolio position tracking
+- [ ] Strategy backtesting
+- [ ] Mobile optimization
+- [ ] Multiple data source integration
+
+SETUP INSTRUCTIONS
+==================
+
+Backend Setup
+cd backend
+pip install -r ../requirements.txt
+python models.py  # Initialize database
+python data_fetcher.py  # Test data fetching
+python app.py  # Start FastAPI server
+
+Frontend Setup
+cd frontend
+npm install
+npm start  # Start development server
+
+KEY DEVELOPMENT NOTES
+=====================
+
+For Financial Accuracy
+- All monetary values stored as floats with 4 decimal precision
+- Greeks calculated using Black-Scholes model
+- IV calculations use Newton-Raphson method
+- Risk-free rate fetched from FRED API
+
+For Performance
+- Database indexes on symbol + timestamp
+- Calculated metrics cached to avoid recalculation
+- Background processing for heavy computations
+- Rate limiting to avoid API blocks
+
+For User Experience
+- Mobile-responsive design for on-the-go checking
+- Real-time updates during market hours
+- Clean, professional interface suitable for finance professionals
+- Progressive disclosure (overview → details)
+
+CURRENT STATUS & NEXT STEPS
+============================
+The backend foundation is complete with data models and fetching capabilities. The immediate next steps are:
+1. Complete the FastAPI endpoints in app.py
+2. Implement options calculations in calculations.py
+3. Build the React frontend with basic dashboard
+4. Add opportunity detection algorithms
+5. Implement real-time data updates
+
+This architecture provides Nick with a professional-grade tool for systematic options analysis while remaining simple enough for personal use and enhancement.

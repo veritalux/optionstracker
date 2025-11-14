@@ -1,0 +1,38 @@
+services:
+  # Backend API Service
+  - type: web
+    name: options-tracker-api
+    runtime: python
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn app:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: options-tracker-db
+          property: connectionString
+      - key: FRONTEND_URL
+        sync: false  # You'll set this manually after deploying frontend
+    healthCheckPath: /
+
+  # Frontend Static Site
+  - type: web
+    name: options-tracker-frontend
+    runtime: static
+    buildCommand: "cd frontend && npm install && npm run build"
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false  # You'll set this manually after deploying backend
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+databases:
+  # PostgreSQL Database
+  - name: options-tracker-db
+    databaseName: options_tracker
+    user: options_tracker_user
+    plan: free  # Free tier PostgreSQL
