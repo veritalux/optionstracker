@@ -1,32 +1,38 @@
 """
-Options pricing and Greeks calculations using py_vollib
+Options pricing helper functions
+
+Note: Greeks calculations have been removed as they are now provided
+directly by Alpha Vantage API via the HISTORICAL_OPTIONS endpoint.
+
+This module now contains only helper functions for:
+- Theoretical pricing (for mispricing detection)
+- Intrinsic and time value calculations
+- IV analysis (rank, percentile, historical volatility)
 """
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from datetime import datetime
+from typing import Optional
 import logging
 
 try:
     from py_vollib.black_scholes import black_scholes as bs_price
-    from py_vollib.black_scholes.greeks.analytical import (
-        delta, gamma, theta, vega, rho
-    )
     from py_vollib.black_scholes.implied_volatility import implied_volatility as bs_iv
 except ImportError:
     logging.warning("py_vollib not available, using scipy fallback")
     bs_price = None
 
 from scipy.stats import norm
-from sqlalchemy.orm import Session
-from models import Symbol, StockPrice, OptionContract, OptionPrice, IVAnalysis
 
 logger = logging.getLogger(__name__)
 
+
 class OptionsCalculator:
     """
-    Options pricing and Greeks calculator using Black-Scholes model
-    Implements both py_vollib (preferred) and scipy fallback methods
+    Options pricing and analysis calculator
+
+    Greeks are now provided by Alpha Vantage API and stored directly.
+    This calculator provides helper functions for pricing and analysis.
     """
 
     def __init__(self, risk_free_rate: float = 0.05):
@@ -200,89 +206,6 @@ class OptionsCalculator:
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * t) / (sigma * np.sqrt(t))
         return S * norm.pdf(d1) * np.sqrt(t) / 100.0
 
-    def calculate_greeks(
-        self,
-        stock_price: float,
-        strike_price: float,
-        time_to_expiry: float,
-        volatility: float,
-        option_type: str,
-        risk_free_rate: Optional[float] = None
-    ) -> Dict[str, float]:
-        """
-        Calculate all Greeks for an option
-
-        Args:
-            stock_price: Current stock price
-            strike_price: Option strike price
-            time_to_expiry: Time to expiry in years
-            volatility: Implied volatility
-            option_type: 'call' or 'put'
-            risk_free_rate: Risk-free rate
-
-        Returns:
-            Dictionary with all Greek values
-        """
-        if risk_free_rate is None:
-            risk_free_rate = self.risk_free_rate
-
-        flag = 'c' if option_type.lower() == 'call' else 'p'
-
-        try:
-            if self.use_py_vollib:
-                greeks = {
-                    'delta': delta(flag, stock_price, strike_price, time_to_expiry, risk_free_rate, volatility),
-                    'gamma': gamma(flag, stock_price, strike_price, time_to_expiry, risk_free_rate, volatility),
-                    'theta': theta(flag, stock_price, strike_price, time_to_expiry, risk_free_rate, volatility) / 365.0,  # Per day
-                    'vega': vega(flag, stock_price, strike_price, time_to_expiry, risk_free_rate, volatility) / 100.0,  # Per 1%
-                    'rho': rho(flag, stock_price, strike_price, time_to_expiry, risk_free_rate, volatility) / 100.0,  # Per 1%
-                }
-            else:
-                # Fallback to scipy
-                greeks = self._calculate_greeks_scipy(
-                    stock_price, strike_price, time_to_expiry,
-                    volatility, option_type, risk_free_rate
-                )
-
-            return greeks
-
-        except Exception as e:
-            logger.error(f"Error calculating Greeks: {str(e)}")
-            return {
-                'delta': 0.0, 'gamma': 0.0, 'theta': 0.0,
-                'vega': 0.0, 'rho': 0.0
-            }
-
-    def _calculate_greeks_scipy(
-        self, S: float, K: float, t: float,
-        sigma: float, option_type: str, r: float
-    ) -> Dict[str, float]:
-        """Scipy fallback for Greeks calculation"""
-        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * t) / (sigma * np.sqrt(t))
-        d2 = d1 - sigma * np.sqrt(t)
-
-        if option_type.lower() == 'call':
-            delta_val = norm.cdf(d1)
-            theta_val = (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(t)) -
-                        r * K * np.exp(-r * t) * norm.cdf(d2)) / 365.0
-            rho_val = K * t * np.exp(-r * t) * norm.cdf(d2) / 100.0
-        else:
-            delta_val = norm.cdf(d1) - 1
-            theta_val = (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(t)) +
-                        r * K * np.exp(-r * t) * norm.cdf(-d2)) / 365.0
-            rho_val = -K * t * np.exp(-r * t) * norm.cdf(-d2) / 100.0
-
-        gamma_val = norm.pdf(d1) / (S * sigma * np.sqrt(t))
-        vega_val = S * norm.pdf(d1) * np.sqrt(t) / 100.0
-
-        return {
-            'delta': delta_val,
-            'gamma': gamma_val,
-            'theta': theta_val,
-            'vega': vega_val,
-            'rho': rho_val
-        }
-
     def calculate_intrinsic_value(
         self,
         stock_price: float,
@@ -404,76 +327,6 @@ class OptionsCalculator:
             logger.error(f"Error calculating historical volatility: {str(e)}")
             return 0.0
 
-    def update_option_greeks(
-        self,
-        db: Session,
-        contract_id: int,
-        stock_price: float
-    ) -> bool:
-        """
-        Update Greeks for the most recent option price entry
-
-        Args:
-            db: Database session
-            contract_id: Option contract ID
-            stock_price: Current stock price
-
-        Returns:
-            Success boolean
-        """
-        try:
-            # Get contract details
-            contract = db.query(OptionContract).filter(
-                OptionContract.id == contract_id
-            ).first()
-
-            if not contract:
-                return False
-
-            # Get most recent price
-            latest_price = db.query(OptionPrice).filter(
-                OptionPrice.contract_id == contract_id
-            ).order_by(OptionPrice.timestamp.desc()).first()
-
-            if not latest_price or not latest_price.implied_volatility:
-                return False
-
-            # Calculate time to expiry
-            time_to_expiry = self.calculate_time_to_expiry(contract.expiry_date)
-
-            # Calculate Greeks
-            greeks = self.calculate_greeks(
-                stock_price=stock_price,
-                strike_price=contract.strike_price,
-                time_to_expiry=time_to_expiry,
-                volatility=latest_price.implied_volatility,
-                option_type=contract.option_type
-            )
-
-            # Update the price record
-            latest_price.delta = greeks['delta']
-            latest_price.gamma = greeks['gamma']
-            latest_price.theta = greeks['theta']
-            latest_price.vega = greeks['vega']
-            latest_price.rho = greeks['rho']
-
-            # Calculate intrinsic and time value
-            intrinsic = self.calculate_intrinsic_value(
-                stock_price, contract.strike_price, contract.option_type
-            )
-            latest_price.intrinsic_value = intrinsic
-            latest_price.time_value = self.calculate_time_value(
-                latest_price.last_price, intrinsic
-            )
-
-            db.commit()
-            return True
-
-        except Exception as e:
-            logger.error(f"Error updating Greeks for contract {contract_id}: {str(e)}")
-            db.rollback()
-            return False
-
 
 def main():
     """Test the calculations"""
@@ -506,18 +359,14 @@ def main():
     print(f"Theoretical Price: ${price:.4f}")
     print()
 
-    # Calculate Greeks
-    greeks = calc.calculate_greeks(S, K, t, sigma, option_type, r)
-    print("Greeks:")
-    for name, value in greeks.items():
-        print(f"  {name.capitalize()}: {value:.6f}")
-    print()
-
     # Calculate intrinsic and time value
     intrinsic = calc.calculate_intrinsic_value(S, K, option_type)
     time_val = calc.calculate_time_value(price, intrinsic)
     print(f"Intrinsic Value: ${intrinsic:.4f}")
     print(f"Time Value: ${time_val:.4f}")
+    print()
+
+    print("Note: Greeks are now provided by Alpha Vantage API")
 
 
 if __name__ == "__main__":
