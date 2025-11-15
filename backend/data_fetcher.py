@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import time
+import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -11,6 +12,13 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Configure yfinance to use proper headers to avoid being blocked
+# This helps bypass rate limiting and blocking on cloud hosting platforms
+_session = requests.Session()
+_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+})
 
 class DataFetcher:
     def __init__(self):
@@ -43,7 +51,7 @@ class DataFetcher:
             # Get company info if not provided
             if not company_name:
                 try:
-                    ticker = yf.Ticker(symbol)
+                    ticker = yf.Ticker(symbol, session=_session)
                     info = ticker.info
                     company_name = info.get('longName', symbol.upper())
                 except:
@@ -72,7 +80,7 @@ class DataFetcher:
     def fetch_stock_data(self, symbol: str, period: str = "1mo") -> Optional[pd.DataFrame]:
         """Fetch stock price data from Yahoo Finance"""
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(symbol, session=_session)
             hist = ticker.history(period=period)
             
             if hist.empty:
@@ -92,7 +100,7 @@ class DataFetcher:
     def fetch_options_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
         """Fetch options chain data from Yahoo Finance"""
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(symbol, session=_session)
             
             # Get options expiration dates
             options_dates = ticker.options
@@ -311,7 +319,7 @@ class DataFetcher:
     def get_current_stock_price(self, symbol: str) -> Optional[float]:
         """Get the most recent stock price for a symbol"""
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(symbol, session=_session)
             hist = ticker.history(period="1d")
             
             if not hist.empty:
