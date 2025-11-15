@@ -10,7 +10,7 @@ ARCHITECTURE & TECH STACK
 Backend (Python)
 - Framework: FastAPI for REST API endpoints
 - Database: SQLite with SQLAlchemy ORM for local data storage
-- Data Sources: Yahoo Finance API via `yfinance` library
+- Data Sources: Alpha Vantage API for stock and options data
 - Options Calculations: `py_vollib` for Black-Scholes model and Greeks
 - Scheduling: APScheduler for periodic data fetching
 - Key Libraries: pandas, numpy, scipy for financial calculations
@@ -30,7 +30,7 @@ FILE STRUCTURE
 options-tracker/
 ├── backend/
 │   ├── models.py           # SQLAlchemy database models
-│   ├── data_fetcher.py     # Yahoo Finance API integration
+│   ├── data_fetcher.py     # Alpha Vantage API integration
 │   ├── calculations.py     # Options pricing & Greeks calculations
 │   ├── app.py             # FastAPI main application
 │   ├── scheduler.py       # Background data update tasks
@@ -117,17 +117,17 @@ DATA UPDATE STRATEGY
 - Market Hours: Every 15 minutes via scheduled tasks
 - After Hours: End-of-day comprehensive update
 - Weekends: Historical analysis and opportunity review
-- Rate Limiting: Respect Yahoo Finance API limits
+- Rate Limiting: Respect Alpha Vantage API limits (free tier: 5 calls/minute, 500/day)
 
 DEVELOPMENT PRIORITIES
 ======================
 
 Phase 1 (Current MVP)
 - [x] Database models and basic data fetching
-- [x] Yahoo Finance integration
-- [ ] FastAPI REST endpoints
+- [x] Alpha Vantage API integration
+- [x] FastAPI REST endpoints
 - [ ] Basic React frontend
-- [ ] Options calculations with py_vollib
+- [x] Options calculations with py_vollib
 
 Phase 2 (Enhancement)
 - [ ] Historical IV analysis
