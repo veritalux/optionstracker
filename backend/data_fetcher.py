@@ -175,13 +175,21 @@ class DataFetcher:
             logger.error(f"Error fetching stock data for {symbol}: {str(e)}")
             return None
 
-    def fetch_options_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """Fetch options chain data from Alpha Vantage"""
+    def fetch_options_data(self, symbol: str, date: str = None) -> Dict[str, pd.DataFrame]:
+        """Fetch options chain data from Alpha Vantage using HISTORICAL_OPTIONS
+
+        Note: Free tier only supports HISTORICAL_OPTIONS (not REALTIME_OPTIONS)
+        This provides complete historical options chains with Greeks and IV
+        """
         try:
             params = {
-                'function': 'REALTIME_OPTIONS',
+                'function': 'HISTORICAL_OPTIONS',
                 'symbol': symbol
             }
+
+            # If no date specified, use most recent data (API defaults to latest)
+            if date:
+                params['date'] = date
 
             data = self._make_api_request(params)
 
@@ -214,14 +222,27 @@ class DataFetcher:
                     if opt_df.empty:
                         return opt_df
 
+                    # Map Alpha Vantage column names to our format
                     opt_df['contractSymbol'] = opt_df['contractID']
-                    opt_df['strike'] = opt_df['strike'].astype(float)
-                    opt_df['lastPrice'] = opt_df.get('last', 0).astype(float)
-                    opt_df['bid'] = opt_df.get('bid', 0).astype(float)
-                    opt_df['ask'] = opt_df.get('ask', 0).astype(float)
-                    opt_df['volume'] = opt_df.get('volume', 0).fillna(0).astype(int)
-                    opt_df['openInterest'] = opt_df.get('open_interest', 0).fillna(0).astype(int)
-                    opt_df['impliedVolatility'] = opt_df.get('implied_volatility', 0).astype(float)
+                    opt_df['strike'] = pd.to_numeric(opt_df['strike'], errors='coerce')
+                    opt_df['lastPrice'] = pd.to_numeric(opt_df.get('last', 0), errors='coerce')
+                    opt_df['bid'] = pd.to_numeric(opt_df.get('bid', 0), errors='coerce')
+                    opt_df['ask'] = pd.to_numeric(opt_df.get('ask', 0), errors='coerce')
+                    opt_df['volume'] = pd.to_numeric(opt_df.get('volume', 0), errors='coerce').fillna(0).astype(int)
+                    opt_df['openInterest'] = pd.to_numeric(opt_df.get('open_interest', 0), errors='coerce').fillna(0).astype(int)
+                    opt_df['impliedVolatility'] = pd.to_numeric(opt_df.get('implied_volatility', 0), errors='coerce')
+
+                    # Alpha Vantage provides Greeks - store them for later use
+                    if 'delta' in opt_df.columns:
+                        opt_df['delta'] = pd.to_numeric(opt_df['delta'], errors='coerce')
+                    if 'gamma' in opt_df.columns:
+                        opt_df['gamma'] = pd.to_numeric(opt_df['gamma'], errors='coerce')
+                    if 'theta' in opt_df.columns:
+                        opt_df['theta'] = pd.to_numeric(opt_df['theta'], errors='coerce')
+                    if 'vega' in opt_df.columns:
+                        opt_df['vega'] = pd.to_numeric(opt_df['vega'], errors='coerce')
+                    if 'rho' in opt_df.columns:
+                        opt_df['rho'] = pd.to_numeric(opt_df['rho'], errors='coerce')
 
                     return opt_df
 
@@ -359,6 +380,18 @@ class DataFetcher:
                                 open_interest=safe_int(row.get('openInterest', 0)),
                                 implied_volatility=safe_float(row.get('impliedVolatility', 0))
                             )
+
+                            # Add Greeks from Alpha Vantage if available
+                            if 'delta' in row and not pd.isna(row.get('delta')):
+                                option_price.delta = safe_float(row.get('delta'))
+                            if 'gamma' in row and not pd.isna(row.get('gamma')):
+                                option_price.gamma = safe_float(row.get('gamma'))
+                            if 'theta' in row and not pd.isna(row.get('theta')):
+                                option_price.theta = safe_float(row.get('theta'))
+                            if 'vega' in row and not pd.isna(row.get('vega')):
+                                option_price.vega = safe_float(row.get('vega'))
+                            if 'rho' in row and not pd.isna(row.get('rho')):
+                                option_price.rho = safe_float(row.get('rho'))
 
                             # Calculate additional metrics
                             bid = safe_float(row.get('bid', 0))
