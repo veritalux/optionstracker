@@ -4,7 +4,7 @@ A full-stack web application for tracking options trading opportunities with rea
 
 ## Features
 
-- **Real-time Options Data**: Fetches live options chains from Yahoo Finance
+- **Real-time Options Data**: Fetches live options chains from Alpha Vantage API
 - **Greeks Calculations**: Automatic Black-Scholes calculations for Delta, Gamma, Theta, Vega, Rho
 - **Opportunity Detection**: Automated scanning for mispricing, unusual volume, and IV extremes
 - **Watchlist Management**: Track multiple symbols and their options
@@ -17,7 +17,7 @@ A full-stack web application for tracking options trading opportunities with rea
 - **Python 3.12** / FastAPI
 - **PostgreSQL** (Production) / SQLite (Development)
 - **SQLAlchemy** ORM
-- **yfinance** for market data
+- **Alpha Vantage API** for market data (stocks and options)
 - **APScheduler** for background jobs
 
 ### Frontend

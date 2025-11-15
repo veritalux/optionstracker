@@ -1,8 +1,8 @@
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 import time
-import requests
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -13,128 +13,234 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure yfinance to use proper headers to avoid being blocked
-# This helps bypass rate limiting and blocking on cloud hosting platforms
-_session = requests.Session()
-_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-})
+# Load API key from environment
+from dotenv import load_dotenv
+load_dotenv()
+
+ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
+if not ALPHA_VANTAGE_API_KEY:
+    logger.warning("ALPHA_VANTAGE_API_KEY not found in environment variables")
+
+ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 
 class DataFetcher:
     def __init__(self):
         self.session = None
-    
+        self.api_key = ALPHA_VANTAGE_API_KEY
+
     def get_session(self) -> Session:
         """Get database session"""
         if not self.session:
             from models import SessionLocal
             self.session = SessionLocal()
         return self.session
-    
+
     def close_session(self):
         """Close database session"""
         if self.session:
             self.session.close()
             self.session = None
-    
+
+    def _make_api_request(self, params: dict, retries: int = 3) -> Optional[dict]:
+        """Make a request to Alpha Vantage API with retry logic"""
+        params['apikey'] = self.api_key
+
+        for attempt in range(retries):
+            try:
+                response = requests.get(ALPHA_VANTAGE_BASE_URL, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                # Check for API error messages
+                if "Error Message" in data:
+                    logger.error(f"Alpha Vantage API error: {data['Error Message']}")
+                    return None
+
+                if "Note" in data:
+                    logger.warning(f"Alpha Vantage rate limit: {data['Note']}")
+                    if attempt < retries - 1:
+                        time.sleep(12)  # Wait 12 seconds before retry (free tier: 5 calls/min)
+                        continue
+                    return None
+
+                return data
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed (attempt {attempt + 1}/{retries}): {str(e)}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                return None
+
+        return None
+
     def add_symbol_to_watchlist(self, symbol: str, company_name: str = None) -> bool:
         """Add a symbol to the database and watchlist"""
         try:
             db = self.get_session()
-            
+
             # Check if symbol already exists
             existing = db.query(Symbol).filter(Symbol.symbol == symbol.upper()).first()
             if existing:
                 logger.info(f"Symbol {symbol} already exists")
                 return True
-            
+
             # Get company info if not provided
             if not company_name:
                 try:
-                    ticker = yf.Ticker(symbol, session=_session)
-                    info = ticker.info
-                    company_name = info.get('longName', symbol.upper())
+                    params = {
+                        'function': 'OVERVIEW',
+                        'symbol': symbol
+                    }
+                    data = self._make_api_request(params)
+                    if data:
+                        company_name = data.get('Name', symbol.upper())
+                    else:
+                        company_name = symbol.upper()
                 except:
                     company_name = symbol.upper()
-            
+
             # Create new symbol
             new_symbol = Symbol(
                 symbol=symbol.upper(),
                 company_name=company_name,
-                sector="",  # Could be populated from yfinance info
+                sector="",  # Could be populated from Alpha Vantage OVERVIEW
                 is_active=True
             )
-            
+
             db.add(new_symbol)
             db.commit()
             db.refresh(new_symbol)
-            
+
             logger.info(f"Added symbol {symbol} to watchlist")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error adding symbol {symbol}: {str(e)}")
             db.rollback()
             return False
-    
+
     def fetch_stock_data(self, symbol: str, period: str = "1mo") -> Optional[pd.DataFrame]:
-        """Fetch stock price data from Yahoo Finance"""
+        """Fetch stock price data from Alpha Vantage"""
         try:
-            ticker = yf.Ticker(symbol, session=_session)
-            hist = ticker.history(period=period)
-            
-            if hist.empty:
+            # Map period to outputsize
+            outputsize = "compact" if period in ["1mo", "1d", "5d"] else "full"
+
+            params = {
+                'function': 'TIME_SERIES_DAILY',
+                'symbol': symbol,
+                'outputsize': outputsize
+            }
+
+            data = self._make_api_request(params)
+
+            if not data or 'Time Series (Daily)' not in data:
                 logger.warning(f"No data returned for {symbol}")
                 return None
-            
-            # Clean up the data
-            hist.reset_index(inplace=True)
-            hist['Symbol'] = symbol.upper()
-            
-            return hist
-            
+
+            # Convert to DataFrame
+            time_series = data['Time Series (Daily)']
+            df = pd.DataFrame.from_dict(time_series, orient='index')
+
+            # Rename columns to match expected format
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+
+            # Convert data types
+            df['Open'] = df['Open'].astype(float)
+            df['High'] = df['High'].astype(float)
+            df['Low'] = df['Low'].astype(float)
+            df['Close'] = df['Close'].astype(float)
+            df['Volume'] = df['Volume'].astype(int)
+
+            # Reset index and convert to datetime
+            df.reset_index(inplace=True)
+            df.rename(columns={'index': 'Date'}, inplace=True)
+            df['Date'] = pd.to_datetime(df['Date'])
+            df['Symbol'] = symbol.upper()
+
+            # Filter by period if needed
+            if period == "1mo":
+                cutoff_date = datetime.now() - timedelta(days=30)
+                df = df[df['Date'] >= cutoff_date]
+            elif period == "5d":
+                cutoff_date = datetime.now() - timedelta(days=5)
+                df = df[df['Date'] >= cutoff_date]
+
+            # Sort by date
+            df = df.sort_values('Date')
+
+            return df
+
         except Exception as e:
             logger.error(f"Error fetching stock data for {symbol}: {str(e)}")
             return None
-    
+
     def fetch_options_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """Fetch options chain data from Yahoo Finance"""
+        """Fetch options chain data from Alpha Vantage"""
         try:
-            ticker = yf.Ticker(symbol, session=_session)
-            
-            # Get options expiration dates
-            options_dates = ticker.options
-            if not options_dates:
+            params = {
+                'function': 'REALTIME_OPTIONS',
+                'symbol': symbol
+            }
+
+            data = self._make_api_request(params)
+
+            if not data or 'data' not in data:
                 logger.warning(f"No options data available for {symbol}")
                 return {}
 
+            options_list = data['data']
+            if not options_list:
+                logger.warning(f"Empty options data for {symbol}")
+                return {}
+
+            # Convert to DataFrame
+            df = pd.DataFrame(options_list)
+
+            # Group by expiration date
             options_data = {}
+            unique_expirations = df['expiration'].unique()
 
-            # Fetch options for next few expiration dates (limit to avoid rate limits)
-            for exp_date in options_dates[:6]:  # First 6 expiration dates
-                try:
-                    opt_chain = ticker.option_chain(exp_date)
+            # Limit to first 6 expiration dates to match previous behavior
+            for exp_date in sorted(unique_expirations)[:6]:
+                exp_df = df[df['expiration'] == exp_date].copy()
 
-                    # Process calls
-                    calls = opt_chain.calls.copy()
-                    calls['option_type'] = 'call'
-                    calls['expiry_date'] = exp_date
-                    calls['symbol'] = symbol.upper()
+                # Split into calls and puts
+                calls = exp_df[exp_df['type'] == 'call'].copy()
+                puts = exp_df[exp_df['type'] == 'put'].copy()
 
-                    # Process puts
-                    puts = opt_chain.puts.copy()
-                    puts['option_type'] = 'put'
-                    puts['expiry_date'] = exp_date
-                    puts['symbol'] = symbol.upper()
+                # Rename columns to match expected format
+                def format_options_df(opt_df):
+                    if opt_df.empty:
+                        return opt_df
 
-                    options_data[exp_date] = {
-                        'calls': calls,
-                        'puts': puts
-                    }
+                    opt_df['contractSymbol'] = opt_df['contractID']
+                    opt_df['strike'] = opt_df['strike'].astype(float)
+                    opt_df['lastPrice'] = opt_df.get('last', 0).astype(float)
+                    opt_df['bid'] = opt_df.get('bid', 0).astype(float)
+                    opt_df['ask'] = opt_df.get('ask', 0).astype(float)
+                    opt_df['volume'] = opt_df.get('volume', 0).fillna(0).astype(int)
+                    opt_df['openInterest'] = opt_df.get('open_interest', 0).fillna(0).astype(int)
+                    opt_df['impliedVolatility'] = opt_df.get('implied_volatility', 0).astype(float)
 
-                except Exception as e:
-                    logger.error(f"Error fetching options for {symbol} {exp_date}: {str(e)}")
-                    continue
+                    return opt_df
+
+                calls = format_options_df(calls)
+                puts = format_options_df(puts)
+
+                # Add metadata
+                calls['option_type'] = 'call'
+                calls['expiry_date'] = exp_date
+                calls['symbol'] = symbol.upper()
+
+                puts['option_type'] = 'put'
+                puts['expiry_date'] = exp_date
+                puts['symbol'] = symbol.upper()
+
+                options_data[exp_date] = {
+                    'calls': calls,
+                    'puts': puts
+                }
 
             return options_data
 
@@ -146,13 +252,13 @@ class DataFetcher:
         """Store stock price data in database"""
         try:
             db = self.get_session()
-            
+
             # Get symbol ID
             symbol_obj = db.query(Symbol).filter(Symbol.symbol == symbol.upper()).first()
             if not symbol_obj:
                 logger.error(f"Symbol {symbol} not found in database")
                 return False
-            
+
             # Process each row
             for _, row in stock_data.iterrows():
                 # Check if this timestamp already exists
@@ -160,7 +266,7 @@ class DataFetcher:
                     StockPrice.symbol_id == symbol_obj.id,
                     StockPrice.timestamp == row['Date']
                 ).first()
-                
+
                 if existing:
                     # Update existing record
                     existing.open_price = float(row['Open'])
@@ -180,41 +286,41 @@ class DataFetcher:
                         volume=int(row['Volume'])
                     )
                     db.add(stock_price)
-            
+
             db.commit()
             logger.info(f"Stored {len(stock_data)} stock price records for {symbol}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error storing stock data for {symbol}: {str(e)}")
             db.rollback()
             return False
-    
+
     def store_options_data(self, symbol: str, options_data: Dict) -> bool:
         """Store options data in database"""
         try:
             db = self.get_session()
-            
+
             # Get symbol ID
             symbol_obj = db.query(Symbol).filter(Symbol.symbol == symbol.upper()).first()
             if not symbol_obj:
                 logger.error(f"Symbol {symbol} not found in database")
                 return False
-            
+
             contracts_added = 0
             prices_added = 0
-            
+
             for exp_date, chains in options_data.items():
                 for option_type, chain_data in chains.items():
                     for _, row in chain_data.iterrows():
                         try:
                             # Create or get option contract
                             contract_symbol = row['contractSymbol']
-                            
+
                             contract = db.query(OptionContract).filter(
                                 OptionContract.contract_symbol == contract_symbol
                             ).first()
-                            
+
                             if not contract:
                                 contract = OptionContract(
                                     symbol_id=symbol_obj.id,
@@ -227,7 +333,7 @@ class DataFetcher:
                                 db.add(contract)
                                 db.flush()  # Get the ID
                                 contracts_added += 1
-                            
+
                             # Store option price data - handle NaN values
                             def safe_float(val, default=0.0):
                                 try:
@@ -253,7 +359,7 @@ class DataFetcher:
                                 open_interest=safe_int(row.get('openInterest', 0)),
                                 implied_volatility=safe_float(row.get('impliedVolatility', 0))
                             )
-                            
+
                             # Calculate additional metrics
                             bid = safe_float(row.get('bid', 0))
                             ask = safe_float(row.get('ask', 0))
@@ -262,23 +368,23 @@ class DataFetcher:
                                 mid_price = (bid + ask) / 2
                                 if mid_price > 0:
                                     option_price.spread_percentage = (ask - bid) / mid_price * 100
-                            
+
                             db.add(option_price)
                             prices_added += 1
-                            
+
                         except Exception as e:
                             logger.error(f"Error processing option row: {str(e)}")
                             continue
-            
+
             db.commit()
             logger.info(f"Stored {contracts_added} new contracts and {prices_added} price records for {symbol}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error storing options data for {symbol}: {str(e)}")
             db.rollback()
             return False
-    
+
     def update_all_symbols(self) -> Dict[str, bool]:
         """Update data for all active symbols in the watchlist"""
         try:
@@ -305,9 +411,9 @@ class DataFetcher:
                 else:
                     results[f"{symbol}_options"] = False
 
-                # Add a small delay between symbols to avoid rate limiting
+                # Add delay between symbols to respect rate limits (5 calls/min for free tier)
                 if i < len(symbols) - 1:  # Don't sleep after the last symbol
-                    time.sleep(1)
+                    time.sleep(13)  # 13 seconds ensures we stay under 5 calls/min
 
             logger.info(f"Completed update for all symbols. Success rate: {sum(results.values())}/{len(results)}")
             return results
@@ -315,18 +421,25 @@ class DataFetcher:
         except Exception as e:
             logger.error(f"Error updating symbols: {str(e)}")
             return {}
-    
+
     def get_current_stock_price(self, symbol: str) -> Optional[float]:
         """Get the most recent stock price for a symbol"""
         try:
-            ticker = yf.Ticker(symbol, session=_session)
-            hist = ticker.history(period="1d")
-            
-            if not hist.empty:
-                return float(hist['Close'].iloc[-1])
-            
+            params = {
+                'function': 'GLOBAL_QUOTE',
+                'symbol': symbol
+            }
+
+            data = self._make_api_request(params)
+
+            if data and 'Global Quote' in data:
+                quote = data['Global Quote']
+                price = quote.get('05. price')
+                if price:
+                    return float(price)
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Error getting current price for {symbol}: {str(e)}")
             return None
@@ -335,24 +448,24 @@ def main():
     """Test the data fetcher"""
     # Initialize database
     create_tables()
-    
+
     fetcher = DataFetcher()
-    
+
     # Add some test symbols
     test_symbols = ['AAPL', 'MSFT', 'SPY']
-    
+
     for symbol in test_symbols:
         print(f"Adding {symbol} to watchlist...")
         fetcher.add_symbol_to_watchlist(symbol)
-    
+
     # Update data for all symbols
     print("Updating data for all symbols...")
     results = fetcher.update_all_symbols()
-    
+
     for key, success in results.items():
         status = "✅" if success else "❌"
         print(f"{status} {key}")
-    
+
     fetcher.close_session()
     print("Data fetching complete!")
 
