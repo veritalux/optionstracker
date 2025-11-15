@@ -11,7 +11,6 @@ import pytz
 
 from models import SessionLocal, create_tables, Symbol, OptionContract, OptionPrice
 from data_fetcher import DataFetcher
-from calculations import OptionsCalculator
 from opportunities import OpportunityDetector
 
 logger = logging.getLogger(__name__)
@@ -122,57 +121,15 @@ class DataUpdateScheduler:
             logger.error(f"Error in options data update task: {str(e)}")
 
     def calculate_greeks(self):
-        """Calculate Greeks for all recent option prices"""
-        logger.info("Starting Greeks calculation")
+        """
+        Greeks calculation (deprecated)
 
-        try:
-            db = SessionLocal()
-            calculator = OptionsCalculator()
-
-            # Get all active contracts
-            contracts = db.query(OptionContract).filter(
-                OptionContract.is_active == True,
-                OptionContract.expiry_date > datetime.now()
-            ).all()
-
-            updated_count = 0
-
-            for contract in contracts:
-                try:
-                    # Get symbol to get stock price
-                    symbol = db.query(Symbol).filter(
-                        Symbol.id == contract.symbol_id
-                    ).first()
-
-                    if not symbol:
-                        continue
-
-                    # Get current stock price
-                    from data_fetcher import DataFetcher
-                    fetcher = DataFetcher()
-                    stock_price = fetcher.get_current_stock_price(symbol.symbol)
-
-                    if not stock_price:
-                        continue
-
-                    # Update Greeks
-                    success = calculator.update_option_greeks(
-                        db, contract.id, stock_price
-                    )
-
-                    if success:
-                        updated_count += 1
-
-                except Exception as e:
-                    logger.error(f"Error calculating Greeks for contract {contract.id}: {str(e)}")
-                    continue
-
-            db.close()
-
-            logger.info(f"Completed Greeks calculation for {updated_count} contracts")
-
-        except Exception as e:
-            logger.error(f"Error in Greeks calculation task: {str(e)}")
+        Note: Greeks are now provided directly by Alpha Vantage API
+        in the HISTORICAL_OPTIONS endpoint and stored during data fetch.
+        This method is kept for backward compatibility but does nothing.
+        """
+        logger.info("Greeks calculation skipped - Greeks provided by Alpha Vantage API")
+        return
 
     def scan_opportunities(self):
         """Scan for trading opportunities"""

@@ -12,7 +12,6 @@ from models import (
     OptionPrice, IVAnalysis, TradingOpportunity, UserWatchlist
 )
 from data_fetcher import DataFetcher
-from calculate_all_greeks import calculate_greeks_for_all_options
 from scheduler import DataUpdateScheduler
 
 # Configure logging
@@ -465,12 +464,7 @@ async def fetch_symbol_data(symbol: str):
         fetcher.store_options_data(symbol, options_data)
 
     fetcher.close_session()
-    logger.info(f"Completed data fetch for {symbol}")
-
-    # Calculate Greeks for updated options
-    logger.info(f"Calculating Greeks for {symbol}")
-    calculate_greeks_for_all_options()
-    logger.info(f"Completed Greeks calculation for {symbol}")
+    logger.info(f"Completed data fetch for {symbol} (Greeks included from Alpha Vantage)")
 
 async def fetch_all_symbols_data():
     """Background task to fetch data for all symbols"""
@@ -478,12 +472,7 @@ async def fetch_all_symbols_data():
     fetcher = DataFetcher()
     results = fetcher.update_all_symbols()
     fetcher.close_session()
-    logger.info(f"Completed data fetch for all symbols: {results}")
-
-    # Calculate Greeks for all updated options
-    logger.info("Calculating Greeks for all symbols")
-    calculate_greeks_for_all_options()
-    logger.info("Completed Greeks calculation for all symbols")
+    logger.info(f"Completed data fetch for all symbols: {results} (Greeks included from Alpha Vantage)")
 
 if __name__ == "__main__":
     import uvicorn
