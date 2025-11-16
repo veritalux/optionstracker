@@ -88,6 +88,9 @@ class OptionPriceResponse(BaseModel):
     id: int
     contract_id: int
     timestamp: datetime
+    expiry_date: Optional[datetime] = None  # From related contract
+    strike_price: Optional[float] = None     # From related contract
+    option_type: Optional[str] = None        # From related contract
     bid: float
     ask: float
     last_price: float
@@ -297,6 +300,12 @@ async def get_option_prices(
     db: Session = Depends(get_db)
 ):
     """Get price history for an option contract"""
+    # Get contract details
+    contract = db.query(OptionContract).filter(OptionContract.id == contract_id).first()
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    # Query prices
     query = db.query(OptionPrice).filter(
         OptionPrice.contract_id == contract_id
     )
@@ -309,7 +318,33 @@ async def get_option_prices(
     if not prices:
         raise HTTPException(status_code=404, detail="No prices found for this contract")
 
-    return prices
+    # Add contract details to each price
+    result = []
+    for price in prices:
+        price_dict = {
+            "id": price.id,
+            "contract_id": price.contract_id,
+            "timestamp": price.timestamp,
+            "expiry_date": contract.expiry_date,
+            "strike_price": contract.strike_price,
+            "option_type": contract.option_type,
+            "bid": price.bid,
+            "ask": price.ask,
+            "last_price": price.last_price,
+            "volume": price.volume,
+            "open_interest": price.open_interest,
+            "implied_volatility": price.implied_volatility,
+            "delta": price.delta,
+            "gamma": price.gamma,
+            "theta": price.theta,
+            "vega": price.vega,
+            "rho": price.rho,
+            "bid_ask_spread": price.bid_ask_spread,
+            "spread_percentage": price.spread_percentage
+        }
+        result.append(price_dict)
+
+    return result
 
 # IV Analysis endpoints
 @app.get("/api/symbols/{symbol}/iv-analysis", response_model=List[IVAnalysisResponse])
