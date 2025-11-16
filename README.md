@@ -43,19 +43,22 @@ DATABASE_URL=sqlite:///./options_tracker.db
 FRONTEND_URL=http://localhost:5173
 ```
 
-### API Limitations (Trial)
+### API Data Available
 
-The **7-day free trial** includes:
+The **7-day free trial** includes full functionality:
 - ✅ Stock EOD prices (OHLCV data)
 - ✅ Options chain structure (strikes, expirations)
+- ✅ **Real-time options quotes with pricing** (bid/ask/last)
+- ✅ **Implied volatility data**
+- ✅ **Options Greeks** (delta, gamma, theta, vega, rho)
+- ✅ Volume and open interest data
 
-**Not included in trial** (requires paid subscription):
-- ❌ Real-time options quotes with pricing
-- ❌ Implied volatility data
-- ❌ Options Greeks from the API
-- ❌ Historical options data
+**API Endpoints Used:**
+- `/equities/eod/stock-prices` - Stock prices
+- `/equities/option-series` - Options chain
+- `/equities/rt/options-rawiv` - Real-time options pricing, IV, and Greeks
 
-**Note:** The application will still work with trial access but options pricing and Greeks will be set to zero. Upgrade to a paid plan for complete functionality.
+The application fetches complete market data for options analysis and trading opportunity detection.
 
 ## Local Development
 

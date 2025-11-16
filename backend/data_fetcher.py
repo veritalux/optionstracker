@@ -186,13 +186,65 @@ class IVolatilityDataFetcher:
             logger.error(f"Error fetching options chain for {symbol}: {str(e)}")
             return None
 
+    def fetch_option_pricing(self, option_symbols: List[str]) -> Optional[pd.DataFrame]:
+        """
+        Fetch real-time pricing, IV, and Greeks for specific option contracts
+
+        Args:
+            option_symbols: List of option contract symbols (e.g., 'AAPL  251121C00270000')
+
+        Returns:
+            DataFrame with pricing and Greeks data or None on error
+        """
+        try:
+            if not option_symbols:
+                return None
+
+            logger.info(f"Fetching pricing for {len(option_symbols)} option contracts")
+
+            # Set up the API method for real-time options with IV
+            getOptionPricing = ivol.setMethod('/equities/rt/options-rawiv')
+
+            # Fetch pricing data (API accepts comma-separated symbols)
+            # Process in batches of 50 to avoid URL length issues
+            batch_size = 50
+            all_data = []
+
+            for i in range(0, len(option_symbols), batch_size):
+                batch = option_symbols[i:i+batch_size]
+                symbols_str = ','.join(batch)
+
+                try:
+                    df = getOptionPricing(symbols=symbols_str)
+                    if df is not None and not df.empty:
+                        all_data.append(df)
+                except Exception as e:
+                    logger.warning(f"Error fetching batch {i//batch_size + 1}: {str(e)}")
+                    continue
+
+                # Small delay between batches
+                if i + batch_size < len(option_symbols):
+                    time.sleep(0.5)
+
+            if not all_data:
+                logger.warning("No pricing data returned from API")
+                return None
+
+            # Combine all batches
+            result_df = pd.concat(all_data, ignore_index=True) if len(all_data) > 1 else all_data[0]
+
+            logger.info(f"Fetched pricing for {len(result_df)} option contracts")
+            return result_df
+
+        except Exception as e:
+            logger.error(f"Error fetching option pricing: {str(e)}")
+            return None
+
     def fetch_options_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
         """
-        Fetch complete options data for a symbol
+        Fetch complete options data for a symbol with real-time pricing and Greeks
 
         Returns a dict organized by expiration date with calls and puts separated.
-        Note: IVolatility trial doesn't include real-time pricing data, so we use
-        synthetic/placeholder values for now.
         """
         try:
             # Get the options chain
@@ -205,6 +257,16 @@ class IVolatilityDataFetcher:
             expirations = sorted(chain_df['expirationDate'].unique())
 
             options_data = {}
+
+            # Fetch pricing for all contracts at once
+            all_symbols = chain_df['OptionSymbol'].tolist()
+            pricing_df = self.fetch_option_pricing(all_symbols)
+
+            # Create a lookup dict for pricing data
+            pricing_lookup = {}
+            if pricing_df is not None and not pricing_df.empty:
+                for _, row in pricing_df.iterrows():
+                    pricing_lookup[row['symbol']] = row
 
             # Process each expiration date
             for exp_date in expirations[:6]:  # Limit to first 6 expirations
@@ -232,19 +294,22 @@ class IVolatilityDataFetcher:
                     # Map C/P to call/put
                     df['option_type'] = df['option_type'].map({'C': 'call', 'P': 'put'})
 
-                    # NOTE: These fields would normally come from a pricing endpoint
-                    # but are not available in the trial. Set to 0 for now.
-                    df['lastPrice'] = 0.0
-                    df['bid'] = 0.0
-                    df['ask'] = 0.0
-                    df['volume'] = 0
-                    df['openInterest'] = 0
-                    df['impliedVolatility'] = 0.0
-                    df['delta'] = 0.0
-                    df['gamma'] = 0.0
-                    df['theta'] = 0.0
-                    df['vega'] = 0.0
-                    df['rho'] = 0.0
+                    # Merge pricing data
+                    for idx, row in df.iterrows():
+                        contract_symbol = row['contractSymbol']
+                        pricing = pricing_lookup.get(contract_symbol, {})
+
+                        df.at[idx, 'lastPrice'] = pricing.get('lastPrice', 0.0)
+                        df.at[idx, 'bid'] = pricing.get('bidPrice', 0.0)
+                        df.at[idx, 'ask'] = pricing.get('askPrice', 0.0)
+                        df.at[idx, 'volume'] = pricing.get('cumulativeVolume', 0)
+                        df.at[idx, 'openInterest'] = pricing.get('openInterest', 0)
+                        df.at[idx, 'impliedVolatility'] = pricing.get('iv', 0.0)
+                        df.at[idx, 'delta'] = pricing.get('delta', 0.0)
+                        df.at[idx, 'gamma'] = pricing.get('gamma', 0.0)
+                        df.at[idx, 'theta'] = pricing.get('theta', 0.0)
+                        df.at[idx, 'vega'] = pricing.get('vega', 0.0)
+                        df.at[idx, 'rho'] = pricing.get('rho', 0.0)
 
                     df['symbol'] = symbol.upper()
 
@@ -485,9 +550,11 @@ def main():
 
     fetcher.close_session()
     print("\nData fetching complete!")
-    print("\nNOTE: Options pricing, IV, and Greeks are set to 0")
-    print("because the IVolatility trial doesn't include real-time options data.")
-    print("Upgrade to a paid plan to get complete options data.")
+    print("\nOptions data now includes:")
+    print("  ✓ Real-time pricing (bid/ask/last)")
+    print("  ✓ Implied volatility")
+    print("  ✓ Greeks (delta, gamma, theta, vega, rho)")
+    print("  ✓ Volume and open interest")
 
 
 if __name__ == "__main__":
