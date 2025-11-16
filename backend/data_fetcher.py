@@ -23,6 +23,13 @@ if not ALPHA_VANTAGE_API_KEY:
 
 ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 
+# FREE TIER LIMITS (as of 2025):
+# - 25 API calls per day (NOT 500!)
+# - 5 API calls per minute
+# - Data updates end-of-day only (no intraday updates)
+# - Free endpoints: TIME_SERIES_DAILY, GLOBAL_QUOTE, HISTORICAL_OPTIONS, OVERVIEW
+# - Premium only: REALTIME_OPTIONS, TIME_SERIES_DAILY_ADJUSTED
+
 class DataFetcher:
     def __init__(self):
         self.session = None
@@ -419,10 +426,27 @@ class DataFetcher:
             return False
 
     def update_all_symbols(self) -> Dict[str, bool]:
-        """Update data for all active symbols in the watchlist"""
+        """
+        Update data for all active symbols in the watchlist
+
+        WARNING: Free tier limit is 25 API calls per day!
+        Each symbol uses 2 calls (stock + options), so max ~12 symbols per day.
+        For more symbols, consider:
+        - Updating different symbols on different days
+        - Upgrading to premium tier
+        - Using less frequent updates (once per day)
+        """
         try:
             db = self.get_session()
             symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
+
+            # Check if we're about to exceed daily limit
+            estimated_calls = len(symbols) * 2  # 2 calls per symbol
+            if estimated_calls > 25:
+                logger.warning(
+                    f"WARNING: {len(symbols)} symbols requires ~{estimated_calls} API calls. "
+                    f"Free tier limit is 25 calls/day. Consider reducing symbols or upgrading."
+                )
 
             results = {}
 
@@ -444,7 +468,8 @@ class DataFetcher:
                 else:
                     results[f"{symbol}_options"] = False
 
-                # Add delay between symbols to respect rate limits (5 calls/min for free tier)
+                # Add delay between symbols to respect rate limits
+                # Free tier: 5 calls/min, 25 calls/day
                 if i < len(symbols) - 1:  # Don't sleep after the last symbol
                     time.sleep(13)  # 13 seconds ensures we stay under 5 calls/min
 

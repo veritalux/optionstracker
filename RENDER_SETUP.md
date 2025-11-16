@@ -64,11 +64,16 @@ You should see:
 **Solution:** Wait 30 seconds and try again. The code has built-in retry logic.
 
 #### Issue: Rate Limiting
-**Free tier limits:**
+**Free tier limits (2025):**
+- **25 API calls per day** (NOT 500!)
 - 5 API calls per minute
-- 500 API calls per day
+- End-of-day data only (no intraday updates)
 
-**Solution:** The code automatically handles rate limiting with 13-second delays between symbols.
+**Solution:**
+- Each symbol uses 2 API calls (stock + options)
+- Max ~12 symbols can be updated per day
+- The code automatically handles rate limiting with 13-second delays
+- Consider updating different symbols on different days for larger watchlists
 
 ### 5. Testing Options Data
 
@@ -98,8 +103,9 @@ This will create all necessary tables.
 
 - **ALPHA_VANTAGE_API_KEY**: Your Alpha Vantage API key
   - Get it from: https://www.alphavantage.co/support/#api-key
-  - Free tier: 5 calls/min, 500 calls/day
-  - Used for: Stock prices, options chains, company data
+  - Free tier: 25 calls/day, 5 calls/min (end-of-day data only)
+  - Used for: Stock prices, options chains (with Greeks!), company data
+  - Max ~12 symbols per day (2 calls per symbol)
 
 - **FRONTEND_URL**: URL of your frontend service
   - Used for: CORS configuration
@@ -132,11 +138,18 @@ The `/` endpoint serves as a health check.
 
 ## Rate Limiting Strategy
 
-The application is configured for Render's free tier:
+The application is configured for Alpha Vantage free tier constraints:
 
-- **13-second delay** between symbols (stays under 5 calls/min)
-- **Automatic retry** with exponential backoff
-- **Smart caching** to minimize API calls
+- **25 API calls per day limit** - Each symbol uses 2 calls (stock + options)
+- **5 calls per minute limit** - 13-second delay between symbols
+- **End-of-day data only** - Free tier does not provide intraday updates
+- **Automatic retry** with exponential backoff for transient errors
+- **Warning system** - Alerts when you're about to exceed daily limit
+
+**For larger watchlists:**
+- Update different symbols on alternating days
+- Consider upgrading to Alpha Vantage premium (higher limits)
+- Focus on your most important symbols
 
 ## Troubleshooting Commands
 
@@ -189,5 +202,5 @@ If you encounter issues:
 
 ---
 
-**Last Updated:** 2025-11-15
-**Alpha Vantage Free Tier:** 5 calls/min, 500 calls/day
+**Last Updated:** 2025-11-16
+**Alpha Vantage Free Tier:** 25 calls/day, 5 calls/min (end-of-day data)
