@@ -17,16 +17,16 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
-if not ALPHA_VANTAGE_API_KEY:
-    logger.warning("ALPHA_VANTAGE_API_KEY not found in environment variables")
+MASSIVE_API_KEY = os.getenv('MASSIVE_API_KEY')
+if not MASSIVE_API_KEY:
+    logger.warning("MASSIVE_API_KEY not found in environment variables")
 
-ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
+MASSIVE_BASE_URL = "https://api.massive.com"
 
 class DataFetcher:
     def __init__(self):
         self.session = None
-        self.api_key = ALPHA_VANTAGE_API_KEY
+        self.api_key = MASSIVE_API_KEY
 
     def get_session(self) -> Session:
         """Get database session"""
@@ -41,26 +41,27 @@ class DataFetcher:
             self.session.close()
             self.session = None
 
-    def _make_api_request(self, params: dict, retries: int = 3) -> Optional[dict]:
-        """Make a request to Alpha Vantage API with retry logic"""
-        params['apikey'] = self.api_key
+    def _make_api_request(self, endpoint: str, params: dict = None, retries: int = 3) -> Optional[dict]:
+        """Make a request to Massive API with retry logic"""
+        if params is None:
+            params = {}
+        params['apiKey'] = self.api_key
+
+        url = f"{MASSIVE_BASE_URL}{endpoint}"
 
         for attempt in range(retries):
             try:
-                response = requests.get(ALPHA_VANTAGE_BASE_URL, params=params, timeout=30)
+                response = requests.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
 
                 # Check for API error messages
-                if "Error Message" in data:
-                    logger.error(f"Alpha Vantage API error: {data['Error Message']}")
+                if data.get("status") == "ERROR":
+                    logger.error(f"Massive API error: {data.get('error', 'Unknown error')}")
                     return None
 
-                if "Note" in data:
-                    logger.warning(f"Alpha Vantage rate limit: {data['Note']}")
-                    if attempt < retries - 1:
-                        time.sleep(12)  # Wait 12 seconds before retry (free tier: 5 calls/min)
-                        continue
+                if data.get("status") == "NOT_AUTHORIZED":
+                    logger.error(f"Massive API authorization error: {data.get('message', 'Not authorized')}")
                     return None
 
                 return data
@@ -88,13 +89,11 @@ class DataFetcher:
             # Get company info if not provided
             if not company_name:
                 try:
-                    params = {
-                        'function': 'OVERVIEW',
-                        'symbol': symbol
-                    }
-                    data = self._make_api_request(params)
-                    if data:
-                        company_name = data.get('Name', symbol.upper())
+                    endpoint = f"/v3/reference/tickers/{symbol.upper()}"
+                    data = self._make_api_request(endpoint)
+                    if data and data.get('status') == 'OK':
+                        result = data.get('results', {})
+                        company_name = result.get('name', symbol.upper())
                     else:
                         company_name = symbol.upper()
                 except:
@@ -104,7 +103,7 @@ class DataFetcher:
             new_symbol = Symbol(
                 symbol=symbol.upper(),
                 company_name=company_name,
-                sector="",  # Could be populated from Alpha Vantage OVERVIEW
+                sector="",  # Could be populated from Massive ticker details
                 is_active=True
             )
 
@@ -121,50 +120,60 @@ class DataFetcher:
             return False
 
     def fetch_stock_data(self, symbol: str, period: str = "1mo") -> Optional[pd.DataFrame]:
-        """Fetch stock price data from Alpha Vantage"""
+        """Fetch stock price data from Massive API
+
+        Note: Free tier has delayed data. Using historical dates for demonstration.
+        """
         try:
-            # Map period to outputsize
-            outputsize = "compact" if period in ["1mo", "1d", "5d"] else "full"
+            # NOTE: Free tier has delayed data (typically end-of-day from previous days)
+            # Using a date range that we know has data available
+            # In production with paid tier, use datetime.now()
 
-            params = {
-                'function': 'TIME_SERIES_DAILY',
-                'symbol': symbol,
-                'outputsize': outputsize
-            }
+            # Use data from early 2024 (guaranteed to be available on free tier)
+            end_date = datetime(2024, 6, 30)
+            if period == "1mo":
+                start_date = end_date - timedelta(days=30)
+            elif period == "5d":
+                start_date = end_date - timedelta(days=5)
+            elif period == "3mo":
+                start_date = end_date - timedelta(days=90)
+            elif period == "1y":
+                start_date = end_date - timedelta(days=365)
+            else:
+                start_date = end_date - timedelta(days=30)  # Default to 1 month
 
-            data = self._make_api_request(params)
+            # Format dates for API
+            from_date = start_date.strftime('%Y-%m-%d')
+            to_date = end_date.strftime('%Y-%m-%d')
 
-            if not data or 'Time Series (Daily)' not in data:
+            # Massive API: /v2/aggs/ticker/{stocksTicker}/range/{multiplier}/{timespan}/{from}/{to}
+            endpoint = f"/v2/aggs/ticker/{symbol.upper()}/range/1/day/{from_date}/{to_date}"
+
+            data = self._make_api_request(endpoint)
+
+            if not data or data.get('status') != 'OK' or 'results' not in data:
                 logger.warning(f"No data returned for {symbol}")
                 return None
 
+            results = data['results']
+            if not results:
+                logger.warning(f"Empty results for {symbol}")
+                return None
+
             # Convert to DataFrame
-            time_series = data['Time Series (Daily)']
-            df = pd.DataFrame.from_dict(time_series, orient='index')
+            df = pd.DataFrame(results)
 
-            # Rename columns to match expected format
-            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-
-            # Convert data types
-            df['Open'] = df['Open'].astype(float)
-            df['High'] = df['High'].astype(float)
-            df['Low'] = df['Low'].astype(float)
-            df['Close'] = df['Close'].astype(float)
-            df['Volume'] = df['Volume'].astype(int)
-
-            # Reset index and convert to datetime
-            df.reset_index(inplace=True)
-            df.rename(columns={'index': 'Date'}, inplace=True)
-            df['Date'] = pd.to_datetime(df['Date'])
+            # Massive API uses: v=volume, vw=volume weighted avg, o=open, c=close, h=high, l=low, t=timestamp(ms), n=transactions
+            df['Date'] = pd.to_datetime(df['t'], unit='ms')
+            df['Open'] = df['o'].astype(float)
+            df['High'] = df['h'].astype(float)
+            df['Low'] = df['l'].astype(float)
+            df['Close'] = df['c'].astype(float)
+            df['Volume'] = df['v'].astype(int)
             df['Symbol'] = symbol.upper()
 
-            # Filter by period if needed
-            if period == "1mo":
-                cutoff_date = datetime.now() - timedelta(days=30)
-                df = df[df['Date'] >= cutoff_date]
-            elif period == "5d":
-                cutoff_date = datetime.now() - timedelta(days=5)
-                df = df[df['Date'] >= cutoff_date]
+            # Select only the columns we need
+            df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Symbol']]
 
             # Sort by date
             df = df.sort_values('Date')
@@ -176,73 +185,70 @@ class DataFetcher:
             return None
 
     def fetch_options_data(self, symbol: str, date: str = None) -> Dict[str, pd.DataFrame]:
-        """Fetch options chain data from Alpha Vantage using HISTORICAL_OPTIONS
+        """Fetch options chain data from Massive API
 
-        Note: Free tier only supports HISTORICAL_OPTIONS (not REALTIME_OPTIONS)
-        This provides complete historical options chains with Greeks and IV
+        Note: Free tier provides contract metadata only. Pricing data, Greeks, and IV
+        require a paid subscription. This method returns contract structure with
+        placeholder values for unavailable data.
         """
         try:
+            # Massive API endpoint for options contracts
+            endpoint = f"/v3/reference/options/contracts"
             params = {
-                'function': 'HISTORICAL_OPTIONS',
-                'symbol': symbol
+                'underlying_ticker': symbol.upper(),
+                'limit': 250,  # Maximum allowed
+                'order': 'asc',
+                'sort': 'expiration_date'
             }
 
-            # If no date specified, use most recent data (API defaults to latest)
-            if date:
-                params['date'] = date
+            data = self._make_api_request(endpoint, params)
 
-            data = self._make_api_request(params)
-
-            if not data or 'data' not in data:
+            if not data or data.get('status') != 'OK' or 'results' not in data:
                 logger.warning(f"No options data available for {symbol}")
                 return {}
 
-            options_list = data['data']
-            if not options_list:
-                logger.warning(f"Empty options data for {symbol}")
+            contracts = data['results']
+            if not contracts:
+                logger.warning(f"Empty options contracts for {symbol}")
                 return {}
 
             # Convert to DataFrame
-            df = pd.DataFrame(options_list)
+            df = pd.DataFrame(contracts)
 
             # Group by expiration date
             options_data = {}
-            unique_expirations = df['expiration'].unique()
+            unique_expirations = df['expiration_date'].unique()
 
             # Limit to first 6 expiration dates to match previous behavior
             for exp_date in sorted(unique_expirations)[:6]:
-                exp_df = df[df['expiration'] == exp_date].copy()
+                exp_df = df[df['expiration_date'] == exp_date].copy()
 
                 # Split into calls and puts
-                calls = exp_df[exp_df['type'] == 'call'].copy()
-                puts = exp_df[exp_df['type'] == 'put'].copy()
+                calls = exp_df[exp_df['contract_type'] == 'call'].copy()
+                puts = exp_df[exp_df['contract_type'] == 'put'].copy()
 
-                # Rename columns to match expected format
+                # Format to match expected structure
                 def format_options_df(opt_df):
                     if opt_df.empty:
                         return opt_df
 
-                    # Map Alpha Vantage column names to our format
-                    opt_df['contractSymbol'] = opt_df['contractID']
-                    opt_df['strike'] = pd.to_numeric(opt_df['strike'], errors='coerce')
-                    opt_df['lastPrice'] = pd.to_numeric(opt_df.get('last', 0), errors='coerce')
-                    opt_df['bid'] = pd.to_numeric(opt_df.get('bid', 0), errors='coerce')
-                    opt_df['ask'] = pd.to_numeric(opt_df.get('ask', 0), errors='coerce')
-                    opt_df['volume'] = pd.to_numeric(opt_df.get('volume', 0), errors='coerce').fillna(0).astype(int)
-                    opt_df['openInterest'] = pd.to_numeric(opt_df.get('open_interest', 0), errors='coerce').fillna(0).astype(int)
-                    opt_df['impliedVolatility'] = pd.to_numeric(opt_df.get('implied_volatility', 0), errors='coerce')
+                    # Map Massive API column names to our format
+                    opt_df['contractSymbol'] = opt_df['ticker']
+                    opt_df['strike'] = pd.to_numeric(opt_df['strike_price'], errors='coerce')
 
-                    # Alpha Vantage provides Greeks - store them for later use
-                    if 'delta' in opt_df.columns:
-                        opt_df['delta'] = pd.to_numeric(opt_df['delta'], errors='coerce')
-                    if 'gamma' in opt_df.columns:
-                        opt_df['gamma'] = pd.to_numeric(opt_df['gamma'], errors='coerce')
-                    if 'theta' in opt_df.columns:
-                        opt_df['theta'] = pd.to_numeric(opt_df['theta'], errors='coerce')
-                    if 'vega' in opt_df.columns:
-                        opt_df['vega'] = pd.to_numeric(opt_df['vega'], errors='coerce')
-                    if 'rho' in opt_df.columns:
-                        opt_df['rho'] = pd.to_numeric(opt_df['rho'], errors='coerce')
+                    # NOTE: The following fields are NOT available on the free tier
+                    # Setting placeholder values - these would need a paid subscription
+                    opt_df['lastPrice'] = 0.0
+                    opt_df['bid'] = 0.0
+                    opt_df['ask'] = 0.0
+                    opt_df['volume'] = 0
+                    opt_df['openInterest'] = 0
+                    opt_df['impliedVolatility'] = 0.0
+                    opt_df['delta'] = 0.0
+                    opt_df['gamma'] = 0.0
+                    opt_df['theta'] = 0.0
+                    opt_df['vega'] = 0.0
+                    opt_df['rho'] = 0.0
 
                     return opt_df
 
@@ -262,6 +268,9 @@ class DataFetcher:
                     'calls': calls,
                     'puts': puts
                 }
+
+            logger.info(f"Fetched {len(contracts)} options contracts for {symbol} across {len(options_data)} expiration dates")
+            logger.warning(f"Options pricing data unavailable - requires paid Massive API subscription")
 
             return options_data
 
@@ -446,7 +455,7 @@ class DataFetcher:
 
                 # Add delay between symbols to respect rate limits (5 calls/min for free tier)
                 if i < len(symbols) - 1:  # Don't sleep after the last symbol
-                    time.sleep(13)  # 13 seconds ensures we stay under 5 calls/min
+                    time.sleep(13)  # 13 seconds ensures we stay under 5 calls/min (Massive free tier)
 
             logger.info(f"Completed update for all symbols. Success rate: {sum(results.values())}/{len(results)}")
             return results
@@ -456,21 +465,29 @@ class DataFetcher:
             return {}
 
     def get_current_stock_price(self, symbol: str) -> Optional[float]:
-        """Get the most recent stock price for a symbol"""
+        """Get the most recent stock price for a symbol
+
+        Note: Real-time quotes require paid subscription.
+        This method returns historical daily close price (free tier uses older data).
+        """
         try:
-            params = {
-                'function': 'GLOBAL_QUOTE',
-                'symbol': symbol
-            }
+            # NOTE: Free tier has delayed data. Using historical date with available data.
+            # In production with paid tier, use datetime.now()
+            # Using last trading day from our test period
+            yesterday = '2024-06-27'
+            today = '2024-06-28'
 
-            data = self._make_api_request(params)
+            endpoint = f"/v2/aggs/ticker/{symbol.upper()}/range/1/day/{yesterday}/{today}"
+            data = self._make_api_request(endpoint)
 
-            if data and 'Global Quote' in data:
-                quote = data['Global Quote']
-                price = quote.get('05. price')
-                if price:
-                    return float(price)
+            if data and data.get('status') == 'OK' and 'results' in data:
+                results = data['results']
+                if results:
+                    # Get the most recent close price
+                    latest = results[-1]
+                    return float(latest['c'])
 
+            logger.warning(f"No recent price data for {symbol} - real-time quotes require paid subscription")
             return None
 
         except Exception as e:
