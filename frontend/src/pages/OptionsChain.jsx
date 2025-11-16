@@ -148,6 +148,9 @@ const OptionsChain = () => {
                   <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
                     Strike
                   </th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
+                    Expiry
+                  </th>
                   <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
                     Last Price
                   </th>
@@ -215,7 +218,7 @@ const ContractRow = ({ contract }) => {
   if (loading) {
     return (
       <tr className="table-row">
-        <td colSpan="9" className="px-3 py-3 text-center text-sm text-gray-500">
+        <td colSpan="10" className="px-3 py-3 text-center text-sm text-gray-500">
           Loading...
         </td>
       </tr>
@@ -241,6 +244,9 @@ const ContractRow = ({ contract }) => {
       </td>
       <td className="px-3 py-3 whitespace-nowrap text-right font-semibold text-gray-900 dark:text-white">
         {formatCurrency(contract.strike_price)}
+      </td>
+      <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
+        {priceData.expiry_date ? formatDate(priceData.expiry_date) : formatDate(contract.expiry_date)}
       </td>
       <td className="px-3 py-3 whitespace-nowrap text-right text-gray-900 dark:text-white">
         {formatCurrency(priceData.last_price)}
