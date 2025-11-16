@@ -499,7 +499,7 @@ async def fetch_symbol_data(symbol: str):
         fetcher.store_options_data(symbol, options_data)
 
     fetcher.close_session()
-    logger.info(f"Completed data fetch for {symbol} (Greeks included from Alpha Vantage)")
+    logger.info(f"Completed data fetch for {symbol} with real-time pricing and Greeks from IVolatility")
 
 async def fetch_all_symbols_data():
     """Background task to fetch data for all symbols"""
@@ -507,7 +507,7 @@ async def fetch_all_symbols_data():
     fetcher = DataFetcher()
     results = fetcher.update_all_symbols()
     fetcher.close_session()
-    logger.info(f"Completed data fetch for all symbols: {results} (Greeks included from Alpha Vantage)")
+    logger.info(f"Completed data fetch for all symbols: {results} with real-time pricing and Greeks from IVolatility")
 
 if __name__ == "__main__":
     import uvicorn

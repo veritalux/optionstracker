@@ -65,7 +65,7 @@ class DataUpdateScheduler:
                     logger.info(f"Updating stock data for {symbol.symbol}")
 
                     # Fetch recent stock data
-                    stock_data = fetcher.fetch_stock_data(symbol.symbol, period="1d")
+                    stock_data = fetcher.fetch_stock_data(symbol.symbol, days=1)
 
                     if stock_data is not None:
                         fetcher.store_stock_data(symbol.symbol, stock_data)
@@ -124,11 +124,11 @@ class DataUpdateScheduler:
         """
         Greeks calculation (deprecated)
 
-        Note: Greeks are now provided directly by Alpha Vantage API
-        in the HISTORICAL_OPTIONS endpoint and stored during data fetch.
+        Note: Greeks are now provided directly by IVolatility API
+        in the /equities/rt/options-rawiv endpoint and stored during data fetch.
         This method is kept for backward compatibility but does nothing.
         """
-        logger.info("Greeks calculation skipped - Greeks provided by Alpha Vantage API")
+        logger.info("Greeks calculation skipped - Greeks provided by IVolatility API")
         return
 
     def scan_opportunities(self):

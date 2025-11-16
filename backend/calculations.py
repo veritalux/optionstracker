@@ -2,7 +2,7 @@
 Options pricing helper functions
 
 Note: Greeks calculations have been removed as they are now provided
-directly by Alpha Vantage API via the HISTORICAL_OPTIONS endpoint.
+directly by IVolatility API via the /equities/rt/options-rawiv endpoint.
 
 This module now contains only helper functions for:
 - Theoretical pricing (for mispricing detection)
@@ -31,7 +31,7 @@ class OptionsCalculator:
     """
     Options pricing and analysis calculator
 
-    Greeks are now provided by Alpha Vantage API and stored directly.
+    Greeks are now provided by IVolatility API and stored directly.
     This calculator provides helper functions for pricing and analysis.
     """
 
