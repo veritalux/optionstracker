@@ -1,18 +1,13 @@
-"""
-IVolatility API Data Fetcher
-Fetches stock and options data from IVolatility REST API
-"""
-
-import os
-import time
-import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+import requests
 import pandas as pd
-import ivolatility as ivol
+import numpy as np
+import time
+import os
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
-
-from models import Symbol, StockPrice, OptionContract, OptionPrice, SessionLocal
+from models import Symbol, StockPrice, OptionContract, OptionPrice, get_db, create_tables
+import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,24 +17,21 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
-IVOLATILITY_API_KEY = os.getenv('IVOLATILITY_API_KEY')
-if not IVOLATILITY_API_KEY:
-    logger.error("IVOLATILITY_API_KEY not found in environment variables")
-    raise ValueError("IVOLATILITY_API_KEY is required")
+ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
+if not ALPHA_VANTAGE_API_KEY:
+    logger.warning("ALPHA_VANTAGE_API_KEY not found in environment variables")
 
-# Configure IVolatility SDK
-ivol.setLoginParams(apiKey=IVOLATILITY_API_KEY)
+ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 
-class IVolatilityDataFetcher:
-    """Data fetcher using IVolatility API"""
-
+class DataFetcher:
     def __init__(self):
         self.session = None
-        self.api_key = IVOLATILITY_API_KEY
+        self.api_key = ALPHA_VANTAGE_API_KEY
 
     def get_session(self) -> Session:
         """Get database session"""
         if not self.session:
+            from models import SessionLocal
             self.session = SessionLocal()
         return self.session
 
@@ -48,6 +40,39 @@ class IVolatilityDataFetcher:
         if self.session:
             self.session.close()
             self.session = None
+
+    def _make_api_request(self, params: dict, retries: int = 3) -> Optional[dict]:
+        """Make a request to Alpha Vantage API with retry logic"""
+        params['apikey'] = self.api_key
+
+        for attempt in range(retries):
+            try:
+                response = requests.get(ALPHA_VANTAGE_BASE_URL, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                # Check for API error messages
+                if "Error Message" in data:
+                    logger.error(f"Alpha Vantage API error: {data['Error Message']}")
+                    return None
+
+                if "Note" in data:
+                    logger.warning(f"Alpha Vantage rate limit: {data['Note']}")
+                    if attempt < retries - 1:
+                        time.sleep(12)  # Wait 12 seconds before retry (free tier: 5 calls/min)
+                        continue
+                    return None
+
+                return data
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed (attempt {attempt + 1}/{retries}): {str(e)}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                return None
+
+        return None
 
     def add_symbol_to_watchlist(self, symbol: str, company_name: str = None) -> bool:
         """Add a symbol to the database and watchlist"""
@@ -58,19 +83,28 @@ class IVolatilityDataFetcher:
             existing = db.query(Symbol).filter(Symbol.symbol == symbol.upper()).first()
             if existing:
                 logger.info(f"Symbol {symbol} already exists")
-                existing.is_active = True
-                db.commit()
                 return True
 
             # Get company info if not provided
             if not company_name:
-                company_name = symbol.upper()
+                try:
+                    params = {
+                        'function': 'OVERVIEW',
+                        'symbol': symbol
+                    }
+                    data = self._make_api_request(params)
+                    if data:
+                        company_name = data.get('Name', symbol.upper())
+                    else:
+                        company_name = symbol.upper()
+                except:
+                    company_name = symbol.upper()
 
             # Create new symbol
             new_symbol = Symbol(
                 symbol=symbol.upper(),
                 company_name=company_name,
-                sector="",
+                sector="",  # Could be populated from Alpha Vantage OVERVIEW
                 is_active=True
             )
 
@@ -86,174 +120,145 @@ class IVolatilityDataFetcher:
             db.rollback()
             return False
 
-    def fetch_stock_data(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
-        """
-        Fetch stock price data from IVolatility
-
-        Args:
-            symbol: Stock symbol
-            days: Number of days of historical data to fetch
-
-        Returns:
-            DataFrame with stock price data or None on error
-        """
+    def fetch_stock_data(self, symbol: str, period: str = "1mo") -> Optional[pd.DataFrame]:
+        """Fetch stock price data from Alpha Vantage"""
         try:
-            logger.info(f"Fetching stock data for {symbol} (last {days} days)")
+            # Map period to outputsize
+            outputsize = "compact" if period in ["1mo", "1d", "5d"] else "full"
 
-            # Set up the API method
-            getStockPrices = ivol.setMethod('/equities/eod/stock-prices')
+            params = {
+                'function': 'TIME_SERIES_DAILY',
+                'symbol': symbol,
+                'outputsize': outputsize
+            }
 
-            # Calculate date range
-            to_date = datetime.now()
-            from_date = to_date - timedelta(days=days)
+            data = self._make_api_request(params)
 
-            # Fetch data
-            df = getStockPrices(
-                symbol=symbol.upper(),
-                **{
-                    'from': from_date.strftime('%Y-%m-%d'),
-                    'to': to_date.strftime('%Y-%m-%d')
-                }
-            )
-
-            if df is None or df.empty:
-                logger.warning(f"No stock data returned for {symbol}")
+            if not data or 'Time Series (Daily)' not in data:
+                logger.warning(f"No data returned for {symbol}")
                 return None
 
-            # Rename columns to match our internal format
-            df = df.rename(columns={
-                'date': 'Date',
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'close': 'Close',
-                'volume': 'Volume'
-            })
+            # Convert to DataFrame
+            time_series = data['Time Series (Daily)']
+            df = pd.DataFrame.from_dict(time_series, orient='index')
 
-            # Ensure Date is datetime
+            # Rename columns to match expected format
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+
+            # Convert data types
+            df['Open'] = df['Open'].astype(float)
+            df['High'] = df['High'].astype(float)
+            df['Low'] = df['Low'].astype(float)
+            df['Close'] = df['Close'].astype(float)
+            df['Volume'] = df['Volume'].astype(int)
+
+            # Reset index and convert to datetime
+            df.reset_index(inplace=True)
+            df.rename(columns={'index': 'Date'}, inplace=True)
             df['Date'] = pd.to_datetime(df['Date'])
             df['Symbol'] = symbol.upper()
+
+            # Filter by period if needed
+            if period == "1mo":
+                cutoff_date = datetime.now() - timedelta(days=30)
+                df = df[df['Date'] >= cutoff_date]
+            elif period == "5d":
+                cutoff_date = datetime.now() - timedelta(days=5)
+                df = df[df['Date'] >= cutoff_date]
 
             # Sort by date
             df = df.sort_values('Date')
 
-            logger.info(f"Fetched {len(df)} days of stock data for {symbol}")
             return df
 
         except Exception as e:
             logger.error(f"Error fetching stock data for {symbol}: {str(e)}")
             return None
 
-    def fetch_options_chain(self, symbol: str, days_forward: int = 60) -> Optional[pd.DataFrame]:
-        """
-        Fetch options chain from IVolatility
+    def fetch_options_data(self, symbol: str, date: str = None) -> Dict[str, pd.DataFrame]:
+        """Fetch options chain data from Alpha Vantage using HISTORICAL_OPTIONS
 
-        Args:
-            symbol: Stock symbol
-            days_forward: Number of days forward to get expirations
-
-        Returns:
-            DataFrame with options chain or None on error
+        Note: Free tier only supports HISTORICAL_OPTIONS (not REALTIME_OPTIONS)
+        This provides complete historical options chains with Greeks and IV
         """
         try:
-            logger.info(f"Fetching options chain for {symbol}")
+            params = {
+                'function': 'HISTORICAL_OPTIONS',
+                'symbol': symbol
+            }
 
-            # Set up the API method
-            getOptionsChain = ivol.setMethod('/equities/option-series')
+            # If no date specified, use most recent data (API defaults to latest)
+            if date:
+                params['date'] = date
 
-            # Calculate date range
-            today = datetime.now()
-            expiry_end = today + timedelta(days=days_forward)
+            data = self._make_api_request(params)
 
-            # Fetch options chain
-            df = getOptionsChain(
-                symbol=symbol.upper(),
-                expFrom=today.strftime('%Y-%m-%d'),
-                expTo=expiry_end.strftime('%Y-%m-%d')
-            )
-
-            if df is None or df.empty:
-                logger.warning(f"No options chain data returned for {symbol}")
-                return None
-
-            # Ensure expiration date is datetime
-            df['expirationDate'] = pd.to_datetime(df['expirationDate'])
-
-            logger.info(f"Fetched {len(df)} option contracts for {symbol}")
-            return df
-
-        except Exception as e:
-            logger.error(f"Error fetching options chain for {symbol}: {str(e)}")
-            return None
-
-    def fetch_options_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """
-        Fetch complete options data for a symbol
-
-        Returns a dict organized by expiration date with calls and puts separated.
-        Note: IVolatility trial doesn't include real-time pricing data, so we use
-        synthetic/placeholder values for now.
-        """
-        try:
-            # Get the options chain
-            chain_df = self.fetch_options_chain(symbol)
-
-            if chain_df is None or chain_df.empty:
+            if not data or 'data' not in data:
+                logger.warning(f"No options data available for {symbol}")
                 return {}
 
-            # Get unique expiration dates
-            expirations = sorted(chain_df['expirationDate'].unique())
+            options_list = data['data']
+            if not options_list:
+                logger.warning(f"Empty options data for {symbol}")
+                return {}
 
+            # Convert to DataFrame
+            df = pd.DataFrame(options_list)
+
+            # Group by expiration date
             options_data = {}
+            unique_expirations = df['expiration'].unique()
 
-            # Process each expiration date
-            for exp_date in expirations[:6]:  # Limit to first 6 expirations
-                exp_str = pd.to_datetime(exp_date).strftime('%Y-%m-%d')
-
-                # Filter for this expiration
-                exp_df = chain_df[chain_df['expirationDate'] == exp_date].copy()
+            # Limit to first 6 expiration dates to match previous behavior
+            for exp_date in sorted(unique_expirations)[:6]:
+                exp_df = df[df['expiration'] == exp_date].copy()
 
                 # Split into calls and puts
-                calls = exp_df[exp_df['callPut'] == 'C'].copy()
-                puts = exp_df[exp_df['callPut'] == 'P'].copy()
+                calls = exp_df[exp_df['type'] == 'call'].copy()
+                puts = exp_df[exp_df['type'] == 'put'].copy()
 
-                # Format the data to match our expected structure
-                def format_chain_data(df):
-                    if df.empty:
-                        return df
+                # Rename columns to match expected format
+                def format_options_df(opt_df):
+                    if opt_df.empty:
+                        return opt_df
 
-                    df = df.rename(columns={
-                        'OptionSymbol': 'contractSymbol',
-                        'strike': 'strike',
-                        'expirationDate': 'expiry_date',
-                        'callPut': 'option_type'
-                    })
+                    # Map Alpha Vantage column names to our format
+                    opt_df['contractSymbol'] = opt_df['contractID']
+                    opt_df['strike'] = pd.to_numeric(opt_df['strike'], errors='coerce')
+                    opt_df['lastPrice'] = pd.to_numeric(opt_df.get('last', 0), errors='coerce')
+                    opt_df['bid'] = pd.to_numeric(opt_df.get('bid', 0), errors='coerce')
+                    opt_df['ask'] = pd.to_numeric(opt_df.get('ask', 0), errors='coerce')
+                    opt_df['volume'] = pd.to_numeric(opt_df.get('volume', 0), errors='coerce').fillna(0).astype(int)
+                    opt_df['openInterest'] = pd.to_numeric(opt_df.get('open_interest', 0), errors='coerce').fillna(0).astype(int)
+                    opt_df['impliedVolatility'] = pd.to_numeric(opt_df.get('implied_volatility', 0), errors='coerce')
 
-                    # Map C/P to call/put
-                    df['option_type'] = df['option_type'].map({'C': 'call', 'P': 'put'})
+                    # Alpha Vantage provides Greeks - store them for later use
+                    if 'delta' in opt_df.columns:
+                        opt_df['delta'] = pd.to_numeric(opt_df['delta'], errors='coerce')
+                    if 'gamma' in opt_df.columns:
+                        opt_df['gamma'] = pd.to_numeric(opt_df['gamma'], errors='coerce')
+                    if 'theta' in opt_df.columns:
+                        opt_df['theta'] = pd.to_numeric(opt_df['theta'], errors='coerce')
+                    if 'vega' in opt_df.columns:
+                        opt_df['vega'] = pd.to_numeric(opt_df['vega'], errors='coerce')
+                    if 'rho' in opt_df.columns:
+                        opt_df['rho'] = pd.to_numeric(opt_df['rho'], errors='coerce')
 
-                    # NOTE: These fields would normally come from a pricing endpoint
-                    # but are not available in the trial. Set to 0 for now.
-                    df['lastPrice'] = 0.0
-                    df['bid'] = 0.0
-                    df['ask'] = 0.0
-                    df['volume'] = 0
-                    df['openInterest'] = 0
-                    df['impliedVolatility'] = 0.0
-                    df['delta'] = 0.0
-                    df['gamma'] = 0.0
-                    df['theta'] = 0.0
-                    df['vega'] = 0.0
-                    df['rho'] = 0.0
+                    return opt_df
 
-                    df['symbol'] = symbol.upper()
+                calls = format_options_df(calls)
+                puts = format_options_df(puts)
 
-                    return df
+                # Add metadata
+                calls['option_type'] = 'call'
+                calls['expiry_date'] = exp_date
+                calls['symbol'] = symbol.upper()
 
-                calls = format_chain_data(calls)
-                puts = format_chain_data(puts)
+                puts['option_type'] = 'put'
+                puts['expiry_date'] = exp_date
+                puts['symbol'] = symbol.upper()
 
-                options_data[exp_str] = {
+                options_data[exp_date] = {
                     'calls': calls,
                     'puts': puts
                 }
@@ -327,11 +332,11 @@ class IVolatilityDataFetcher:
             prices_added = 0
 
             for exp_date, chains in options_data.items():
-                for option_type_label, chain_data in chains.items():
+                for option_type, chain_data in chains.items():
                     for _, row in chain_data.iterrows():
                         try:
                             # Create or get option contract
-                            contract_symbol = row['contractSymbol'].strip()
+                            contract_symbol = row['contractSymbol']
 
                             contract = db.query(OptionContract).filter(
                                 OptionContract.contract_symbol == contract_symbol
@@ -341,7 +346,7 @@ class IVolatilityDataFetcher:
                                 contract = OptionContract(
                                     symbol_id=symbol_obj.id,
                                     contract_symbol=contract_symbol,
-                                    expiry_date=pd.to_datetime(exp_date),
+                                    expiry_date=datetime.strptime(exp_date, '%Y-%m-%d'),
                                     strike_price=float(row['strike']),
                                     option_type=row['option_type'],
                                     is_active=True
@@ -350,7 +355,7 @@ class IVolatilityDataFetcher:
                                 db.flush()  # Get the ID
                                 contracts_added += 1
 
-                            # Store option price data (even if zeros)
+                            # Store option price data - handle NaN values
                             def safe_float(val, default=0.0):
                                 try:
                                     result = float(val)
@@ -360,7 +365,7 @@ class IVolatilityDataFetcher:
 
                             def safe_int(val, default=0):
                                 try:
-                                    result = float(val)
+                                    result = float(val)  # Convert to float first to handle NaN
                                     return int(result) if not pd.isna(result) else default
                                 except (ValueError, TypeError):
                                     return default
@@ -373,15 +378,22 @@ class IVolatilityDataFetcher:
                                 last_price=safe_float(row.get('lastPrice', 0)),
                                 volume=safe_int(row.get('volume', 0)),
                                 open_interest=safe_int(row.get('openInterest', 0)),
-                                implied_volatility=safe_float(row.get('impliedVolatility', 0)),
-                                delta=safe_float(row.get('delta', 0)),
-                                gamma=safe_float(row.get('gamma', 0)),
-                                theta=safe_float(row.get('theta', 0)),
-                                vega=safe_float(row.get('vega', 0)),
-                                rho=safe_float(row.get('rho', 0))
+                                implied_volatility=safe_float(row.get('impliedVolatility', 0))
                             )
 
-                            # Calculate spreads if we have real data
+                            # Add Greeks from Alpha Vantage if available
+                            if 'delta' in row and not pd.isna(row.get('delta')):
+                                option_price.delta = safe_float(row.get('delta'))
+                            if 'gamma' in row and not pd.isna(row.get('gamma')):
+                                option_price.gamma = safe_float(row.get('gamma'))
+                            if 'theta' in row and not pd.isna(row.get('theta')):
+                                option_price.theta = safe_float(row.get('theta'))
+                            if 'vega' in row and not pd.isna(row.get('vega')):
+                                option_price.vega = safe_float(row.get('vega'))
+                            if 'rho' in row and not pd.isna(row.get('rho')):
+                                option_price.rho = safe_float(row.get('rho'))
+
+                            # Calculate additional metrics
                             bid = safe_float(row.get('bid', 0))
                             ask = safe_float(row.get('ask', 0))
                             if bid > 0 and ask > 0:
@@ -432,9 +444,9 @@ class IVolatilityDataFetcher:
                 else:
                     results[f"{symbol}_options"] = False
 
-                # Small delay to be respectful to the API
-                if i < len(symbols) - 1:
-                    time.sleep(1)
+                # Add delay between symbols to respect rate limits (5 calls/min for free tier)
+                if i < len(symbols) - 1:  # Don't sleep after the last symbol
+                    time.sleep(13)  # 13 seconds ensures we stay under 5 calls/min
 
             logger.info(f"Completed update for all symbols. Success rate: {sum(results.values())}/{len(results)}")
             return results
@@ -446,30 +458,34 @@ class IVolatilityDataFetcher:
     def get_current_stock_price(self, symbol: str) -> Optional[float]:
         """Get the most recent stock price for a symbol"""
         try:
-            df = self.fetch_stock_data(symbol, days=1)
-            if df is not None and not df.empty:
-                return float(df.iloc[-1]['Close'])
+            params = {
+                'function': 'GLOBAL_QUOTE',
+                'symbol': symbol
+            }
+
+            data = self._make_api_request(params)
+
+            if data and 'Global Quote' in data:
+                quote = data['Global Quote']
+                price = quote.get('05. price')
+                if price:
+                    return float(price)
+
             return None
+
         except Exception as e:
             logger.error(f"Error getting current price for {symbol}: {str(e)}")
             return None
 
-
-# For backwards compatibility, create an alias
-DataFetcher = IVolatilityDataFetcher
-
-
 def main():
-    """Test the IVolatility data fetcher"""
-    from models import create_tables
-
+    """Test the data fetcher"""
     # Initialize database
     create_tables()
 
-    fetcher = IVolatilityDataFetcher()
+    fetcher = DataFetcher()
 
     # Add some test symbols
-    test_symbols = ['AAPL', 'MSFT', 'GOOGL']
+    test_symbols = ['AAPL', 'MSFT', 'SPY']
 
     for symbol in test_symbols:
         print(f"Adding {symbol} to watchlist...")
@@ -484,11 +500,7 @@ def main():
         print(f"{status} {key}")
 
     fetcher.close_session()
-    print("\nData fetching complete!")
-    print("\nNOTE: Options pricing, IV, and Greeks are set to 0")
-    print("because the IVolatility trial doesn't include real-time options data.")
-    print("Upgrade to a paid plan to get complete options data.")
-
+    print("Data fetching complete!")
 
 if __name__ == "__main__":
     main()
