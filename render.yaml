@@ -4,7 +4,7 @@ services:
     name: options-tracker-api
     runtime: python
     buildCommand: "pip install -r backend/requirements.txt"
-    startCommand: "cd backend && uvicorn app:app --host 0.0.0.0 --port $PORT"
+    startCommand: "cd backend && uvicorn app:app --host 0.0.0.0 --port $PORT --timeout-graceful-shutdown 60"
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -17,6 +17,11 @@ services:
       - key: IVOLATILITY_API_KEY
         sync: false  # Set this in Render dashboard for security
     healthCheckPath: /
+    # Longer health check intervals to avoid interrupting long data fetches
+    healthCheck:
+      path: /
+      timeout: 30
+      interval: 300  # Check every 5 minutes instead of constantly
 
   # Frontend Static Site
   - type: web
