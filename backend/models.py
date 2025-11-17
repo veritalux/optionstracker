@@ -121,11 +121,19 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./options_tracker.db")
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    # PostgreSQL - no special connection args needed
+    # PostgreSQL - configured for concurrent scheduled jobs
     # Handle Render's postgres:// vs postgresql:// prefix
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,      # Verify connections before using
+        pool_size=20,            # Increased from default 5 to handle concurrent jobs
+        max_overflow=30,         # Increased from default 10 for peak loads
+        pool_recycle=3600,       # Recycle connections after 1 hour
+        pool_timeout=60          # Wait up to 60s for connection (increased from 30s)
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

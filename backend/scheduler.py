@@ -64,6 +64,9 @@ class DataUpdateScheduler:
 
         logger.info("Starting scheduled stock data update")
 
+        db = None
+        fetcher = None
+
         try:
             db = SessionLocal()
             fetcher = DataFetcher()
@@ -92,14 +95,24 @@ class DataUpdateScheduler:
                     logger.error(f"Error updating {symbol.symbol}: {str(e)}")
                     continue
 
-            fetcher.close_session()
-            db.close()
-
             if not self.shutdown_event.is_set():
                 logger.info("Completed scheduled stock data update")
 
         except Exception as e:
             logger.error(f"Error in stock data update task: {str(e)}")
+
+        finally:
+            # Ensure connections are always closed
+            if fetcher:
+                try:
+                    fetcher.close_session()
+                except Exception as e:
+                    logger.error(f"Error closing fetcher session: {str(e)}")
+            if db:
+                try:
+                    db.close()
+                except Exception as e:
+                    logger.error(f"Error closing database session: {str(e)}")
 
     def update_options_data(self):
         """Update options chain data for all watchlist symbols"""
@@ -108,6 +121,9 @@ class DataUpdateScheduler:
             return
 
         logger.info("Starting scheduled options data update")
+
+        db = None
+        fetcher = None
 
         try:
             db = SessionLocal()
@@ -137,14 +153,24 @@ class DataUpdateScheduler:
                     logger.error(f"Error updating options for {symbol.symbol}: {str(e)}")
                     continue
 
-            fetcher.close_session()
-            db.close()
-
             if not self.shutdown_event.is_set():
                 logger.info("Completed scheduled options data update")
 
         except Exception as e:
             logger.error(f"Error in options data update task: {str(e)}")
+
+        finally:
+            # Ensure connections are always closed
+            if fetcher:
+                try:
+                    fetcher.close_session()
+                except Exception as e:
+                    logger.error(f"Error closing fetcher session: {str(e)}")
+            if db:
+                try:
+                    db.close()
+                except Exception as e:
+                    logger.error(f"Error closing database session: {str(e)}")
 
     def calculate_greeks(self):
         """
@@ -165,6 +191,8 @@ class DataUpdateScheduler:
 
         logger.info("Starting opportunity scan")
 
+        db = None
+
         try:
             db = SessionLocal()
             detector = OpportunityDetector(db)
@@ -181,10 +209,16 @@ class DataUpdateScheduler:
                     top_opp = max(opps, key=lambda x: x['score'])
                     logger.info(f"  {symbol}: Best score {top_opp['score']:.0f} - {top_opp['opportunity_type']}")
 
-            db.close()
-
         except Exception as e:
             logger.error(f"Error in opportunity scan task: {str(e)}")
+
+        finally:
+            # Ensure database connection is always closed
+            if db:
+                try:
+                    db.close()
+                except Exception as e:
+                    logger.error(f"Error closing database session: {str(e)}")
 
     def comprehensive_update(self):
         """
