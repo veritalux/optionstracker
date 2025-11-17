@@ -452,6 +452,12 @@ async def get_symbol_opportunities(
 
     return opportunities
 
+@app.post("/api/opportunities/scan")
+async def scan_opportunities(background_tasks: BackgroundTasks):
+    """Trigger a manual scan for trading opportunities"""
+    background_tasks.add_task(scheduler.scan_opportunities)
+    return {"message": "Opportunity scan started"}
+
 # Data update endpoints
 @app.post("/api/update/{symbol}")
 async def update_symbol_data(

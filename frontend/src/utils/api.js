@@ -71,6 +71,11 @@ export const getSymbolOpportunities = async (symbol, isActive = true) => {
   return response.data;
 };
 
+export const scanOpportunities = async () => {
+  const response = await api.post(`/opportunities/scan`);
+  return response.data;
+};
+
 // Dashboard
 export const getDashboardSummary = async () => {
   const response = await api.get(`/dashboard`);

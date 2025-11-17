@@ -6,6 +6,7 @@ import { formatCurrency, formatPercent, getScoreColor, formatDateTime } from '..
 const Opportunities = () => {
   const { fetchOpportunities } = useData();
   const [opportunities, setOpportunities] = useState([]);
+  const [isScanning, setIsScanning] = useState(false);
   const [filter, setFilter] = useState({
     min_score: 50,
     opportunity_type: '',
@@ -30,10 +31,30 @@ const Opportunities = () => {
     }
   };
 
+  const handleRefresh = async () => {
+    try {
+      setIsScanning(true);
+      // Trigger opportunity scan
+      await api.scanOpportunities();
+      // Wait a bit for the scan to process
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Reload opportunities
+      await loadOpportunities();
+    } catch (error) {
+      console.error('Error scanning opportunities:', error);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
   const opportunityTypes = [
     { value: '', label: 'All Types' },
+    { value: 'premium_sell', label: 'Premium Sell (Credit)' },
+    { value: 'premium_buy', label: 'Premium Buy (Debit)' },
+    { value: 'gamma_scalp', label: 'Gamma Scalping' },
     { value: 'overpriced', label: 'Overpriced' },
     { value: 'underpriced', label: 'Underpriced' },
+    { value: 'high_delta', label: 'High Delta' },
     { value: 'high_iv', label: 'High IV' },
     { value: 'low_iv', label: 'Low IV' },
     { value: 'unusual_volume', label: 'Unusual Volume' },
@@ -113,10 +134,11 @@ const Opportunities = () => {
             {opportunities.length} Opportunities Found
           </h3>
           <button
-            onClick={loadOpportunities}
-            className="btn-secondary"
+            onClick={handleRefresh}
+            disabled={isScanning}
+            className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            🔄 Refresh
+            {isScanning ? '⏳ Scanning...' : '🔄 Refresh'}
           </button>
         </div>
 

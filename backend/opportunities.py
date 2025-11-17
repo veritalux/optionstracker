@@ -1,5 +1,12 @@
 """
-Trading opportunity detection and scoring algorithms
+Enhanced Trading Opportunity Detection Using Greeks and Financial Strategies
+
+Based on established options trading principles:
+- High IV Rank (>80): Premium selling strategies (high theta, high vega)
+- Low IV Rank (<20): Premium buying strategies (high vega, low cost)
+- Mispricing: Black-Scholes vs market price deviations
+- Gamma Scalping: High gamma + low theta near ATM
+- Delta Opportunities: Directional plays with favorable risk/reward
 """
 import pandas as pd
 import numpy as np
@@ -18,18 +25,14 @@ from calculations import OptionsCalculator
 logger = logging.getLogger(__name__)
 
 
-class OpportunityDetector:
+class EnhancedOpportunityDetector:
     """
-    Identifies and scores trading opportunities based on:
-    - Mispricing vs theoretical value
-    - IV rank extremes
-    - Volume anomalies
-    - Time value near expiration
+    Advanced opportunity detection using Greeks and established trading strategies
     """
 
     def __init__(self, db_session: Session):
         """
-        Initialize opportunity detector
+        Initialize enhanced opportunity detector
 
         Args:
             db_session: SQLAlchemy database session
@@ -37,12 +40,20 @@ class OpportunityDetector:
         self.db = db_session
         self.calculator = OptionsCalculator()
 
-        # Detection thresholds
-        self.MISPRICING_THRESHOLD = 0.20  # 20% above/below theoretical
-        self.IV_RANK_HIGH = 80.0  # IV rank >80% is expensive
-        self.IV_RANK_LOW = 20.0   # IV rank <20% is cheap
-        self.VOLUME_MULTIPLIER = 1.5  # 150% of average volume
-        self.MIN_SCORE = 40.0  # Minimum score to save opportunity
+        # Strategy-based thresholds
+        self.IV_RANK_HIGH = 80.0  # High IV for selling premium
+        self.IV_RANK_MID_HIGH = 60.0  # Moderately high IV
+        self.IV_RANK_MID_LOW = 40.0  # Moderately low IV
+        self.IV_RANK_LOW = 20.0  # Low IV for buying premium
+
+        self.MISPRICING_THRESHOLD = 0.15  # 15% deviation
+        self.TIGHT_SPREAD = 5.0  # <5% spread is excellent
+        self.ACCEPTABLE_SPREAD = 10.0  # <10% spread is tradable
+
+        self.MIN_VOLUME = 10  # Minimum volume for liquidity
+        self.MIN_OPEN_INTEREST = 50  # Minimum OI for liquidity
+
+        self.MIN_SCORE = 50.0  # Minimum score to save
 
     def get_current_stock_price(self, symbol_id: int) -> Optional[float]:
         """Get most recent stock price for a symbol"""
@@ -57,49 +68,367 @@ class OpportunityDetector:
             logger.error(f"Error getting stock price: {str(e)}")
             return None
 
-    def calculate_average_volume(
+    def calculate_liquidity_score(self, latest_price: OptionPrice) -> float:
+        """
+        Calculate liquidity score (0-100) based on spread, volume, OI
+
+        Higher scores = better liquidity
+        """
+        score = 0.0
+
+        # Spread component (40 points max)
+        if latest_price.spread_percentage:
+            if latest_price.spread_percentage < self.TIGHT_SPREAD:
+                score += 40
+            elif latest_price.spread_percentage < self.ACCEPTABLE_SPREAD:
+                score += 30 * (1 - (latest_price.spread_percentage - self.TIGHT_SPREAD) /
+                              (self.ACCEPTABLE_SPREAD - self.TIGHT_SPREAD))
+
+        # Volume component (30 points max)
+        if latest_price.volume > 0:
+            if latest_price.volume >= 100:
+                score += 30
+            elif latest_price.volume >= 50:
+                score += 20
+            elif latest_price.volume >= 10:
+                score += 10
+
+        # Open interest component (30 points max)
+        if latest_price.open_interest:
+            if latest_price.open_interest >= 1000:
+                score += 30
+            elif latest_price.open_interest >= 500:
+                score += 20
+            elif latest_price.open_interest >= 100:
+                score += 10
+
+        return min(score, 100)
+
+    def detect_premium_selling_opportunity(
         self,
-        contract_id: int,
-        days: int = 10
-    ) -> float:
-        """Calculate average volume for an option contract"""
+        symbol: Symbol,
+        contract: OptionContract,
+        latest_price: OptionPrice,
+        stock_price: float
+    ) -> Optional[Dict]:
+        """
+        Detect premium selling opportunities (credit strategies)
+
+        Criteria:
+        - High IV Rank (>60%)
+        - High Theta (time decay working for seller)
+        - High Vega (benefit from IV contraction)
+        - Good liquidity
+        - Not too far OTM (delta > 0.15 for reasonable premium)
+
+        Best for: Covered calls, cash-secured puts, credit spreads
+        """
         try:
-            cutoff_date = datetime.now() - timedelta(days=days)
+            # Get IV analysis
+            recent_iv = self.db.query(IVAnalysis).filter(
+                IVAnalysis.symbol_id == symbol.id
+            ).order_by(IVAnalysis.timestamp.desc()).first()
 
-            volumes = self.db.query(OptionPrice.volume).filter(
-                and_(
-                    OptionPrice.contract_id == contract_id,
-                    OptionPrice.timestamp >= cutoff_date,
-                    OptionPrice.volume > 0
-                )
-            ).all()
+            if not recent_iv or recent_iv.iv_rank < self.IV_RANK_MID_HIGH:
+                return None
 
-            if not volumes:
-                return 0.0
+            # Check Greeks
+            if not latest_price.theta or not latest_price.vega or not latest_price.delta:
+                return None
 
-            avg_volume = np.mean([v[0] for v in volumes])
-            return avg_volume
+            # High theta is negative and large in magnitude (good for sellers)
+            theta_magnitude = abs(latest_price.theta)
+            if theta_magnitude < 0.02:  # Too little time decay
+                return None
+
+            # Check delta for reasonable premium collection
+            delta_magnitude = abs(latest_price.delta)
+            if delta_magnitude < 0.10:  # Too far OTM, minimal premium
+                return None
+
+            # Calculate time to expiry
+            time_to_expiry = self.calculator.calculate_time_to_expiry(contract.expiry_date)
+            days_to_expiry = time_to_expiry * 365
+
+            # Best for 20-60 days out
+            if days_to_expiry < 7 or days_to_expiry > 90:
+                return None
+
+            # Calculate score
+            base_score = 40
+
+            # IV rank contribution (0-25 points)
+            if recent_iv.iv_rank >= self.IV_RANK_HIGH:
+                base_score += 25
+            else:
+                base_score += 15 * (recent_iv.iv_rank - self.IV_RANK_MID_HIGH) / (self.IV_RANK_HIGH - self.IV_RANK_MID_HIGH)
+
+            # Theta contribution (0-15 points)
+            # Higher theta magnitude = better for selling
+            theta_score = min(theta_magnitude / 0.10 * 15, 15)
+            base_score += theta_score
+
+            # Vega contribution (0-10 points)
+            # Higher vega = more to gain from IV contraction
+            if latest_price.vega > 0.20:
+                base_score += 10
+            elif latest_price.vega > 0.10:
+                base_score += 5
+
+            # Liquidity bonus (0-10 points)
+            liquidity_score = self.calculate_liquidity_score(latest_price)
+            base_score += min(liquidity_score / 10, 10)
+
+            # Get mid price
+            mid_price = (latest_price.bid + latest_price.ask) / 2 if (latest_price.bid > 0 and latest_price.ask > 0) else latest_price.last_price
+
+            description = (
+                f"PREMIUM SELL: {symbol.symbol} {contract.option_type.upper()} "
+                f"${contract.strike_price:.0f} exp {contract.expiry_date.strftime('%m/%d')} "
+                f"(IV Rank: {recent_iv.iv_rank:.0f}%, Theta: ${theta_magnitude:.3f}/day, "
+                f"Premium: ${mid_price:.2f}, Delta: {delta_magnitude:.2f})"
+            )
+
+            return {
+                'contract_id': contract.id,
+                'opportunity_type': 'premium_sell',
+                'score': min(base_score, 100),
+                'description': description,
+                'metadata': {
+                    'iv_rank': recent_iv.iv_rank,
+                    'theta': latest_price.theta,
+                    'vega': latest_price.vega,
+                    'delta': latest_price.delta,
+                    'premium': mid_price,
+                    'days_to_expiry': days_to_expiry
+                }
+            }
 
         except Exception as e:
-            logger.error(f"Error calculating average volume: {str(e)}")
-            return 0.0
+            logger.error(f"Error detecting premium sell opportunity: {str(e)}")
+            return None
 
-    def detect_mispricing(
+    def detect_premium_buying_opportunity(
+        self,
+        symbol: Symbol,
+        contract: OptionContract,
+        latest_price: OptionPrice,
+        stock_price: float
+    ) -> Optional[Dict]:
+        """
+        Detect premium buying opportunities (debit strategies)
+
+        Criteria:
+        - Low IV Rank (<40%)
+        - High Vega (benefit from IV expansion)
+        - Lower Theta (minimize time decay cost)
+        - Good liquidity
+        - Reasonable delta (directional exposure)
+
+        Best for: Long calls/puts, debit spreads, calendar spreads
+        """
+        try:
+            # Get IV analysis
+            recent_iv = self.db.query(IVAnalysis).filter(
+                IVAnalysis.symbol_id == symbol.id
+            ).order_by(IVAnalysis.timestamp.desc()).first()
+
+            if not recent_iv or recent_iv.iv_rank > self.IV_RANK_MID_LOW:
+                return None
+
+            # Check Greeks
+            if not latest_price.theta or not latest_price.vega or not latest_price.delta:
+                return None
+
+            # Lower theta magnitude is better for buyers
+            theta_magnitude = abs(latest_price.theta)
+
+            # High vega for IV expansion potential
+            if latest_price.vega < 0.05:
+                return None
+
+            # Calculate time to expiry
+            time_to_expiry = self.calculator.calculate_time_to_expiry(contract.expiry_date)
+            days_to_expiry = time_to_expiry * 365
+
+            # Prefer longer duration for low IV plays (30-90 days)
+            if days_to_expiry < 20 or days_to_expiry > 120:
+                return None
+
+            # Calculate score
+            base_score = 40
+
+            # IV rank contribution (0-25 points)
+            # Lower IV rank = better for buying
+            if recent_iv.iv_rank <= self.IV_RANK_LOW:
+                base_score += 25
+            else:
+                base_score += 15 * (self.IV_RANK_MID_LOW - recent_iv.iv_rank) / (self.IV_RANK_MID_LOW - self.IV_RANK_LOW)
+
+            # Vega contribution (0-15 points)
+            # Higher vega = more to gain from IV expansion
+            vega_score = min(latest_price.vega / 0.30 * 15, 15)
+            base_score += vega_score
+
+            # Theta contribution (0-10 points)
+            # Lower theta magnitude = less decay cost
+            if theta_magnitude < 0.02:
+                base_score += 10
+            elif theta_magnitude < 0.05:
+                base_score += 5
+
+            # Liquidity bonus (0-10 points)
+            liquidity_score = self.calculate_liquidity_score(latest_price)
+            base_score += min(liquidity_score / 10, 10)
+
+            # Get mid price
+            mid_price = (latest_price.bid + latest_price.ask) / 2 if (latest_price.bid > 0 and latest_price.ask > 0) else latest_price.last_price
+
+            delta_magnitude = abs(latest_price.delta)
+
+            description = (
+                f"PREMIUM BUY: {symbol.symbol} {contract.option_type.upper()} "
+                f"${contract.strike_price:.0f} exp {contract.expiry_date.strftime('%m/%d')} "
+                f"(IV Rank: {recent_iv.iv_rank:.0f}%, Vega: {latest_price.vega:.2f}, "
+                f"Cost: ${mid_price:.2f}, Delta: {delta_magnitude:.2f})"
+            )
+
+            return {
+                'contract_id': contract.id,
+                'opportunity_type': 'premium_buy',
+                'score': min(base_score, 100),
+                'description': description,
+                'metadata': {
+                    'iv_rank': recent_iv.iv_rank,
+                    'theta': latest_price.theta,
+                    'vega': latest_price.vega,
+                    'delta': latest_price.delta,
+                    'cost': mid_price,
+                    'days_to_expiry': days_to_expiry
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Error detecting premium buy opportunity: {str(e)}")
+            return None
+
+    def detect_gamma_scalping_opportunity(
         self,
         contract: OptionContract,
         latest_price: OptionPrice,
         stock_price: float
     ) -> Optional[Dict]:
         """
-        Detect options trading significantly above/below theoretical value
+        Detect gamma scalping opportunities
 
-        Args:
-            contract: Option contract
-            latest_price: Most recent option price data
-            stock_price: Current stock price
+        Criteria:
+        - High Gamma (large delta changes per stock move)
+        - Low Theta (minimize decay cost)
+        - Near ATM (maximize gamma)
+        - Near expiration (7-30 days)
+        - Good liquidity for frequent trading
 
-        Returns:
-            Opportunity dict if detected, None otherwise
+        Best for: Active traders in volatile markets
+        """
+        try:
+            if not latest_price.gamma or not latest_price.theta or not latest_price.delta:
+                return None
+
+            # Check gamma magnitude
+            gamma_magnitude = abs(latest_price.gamma)
+            if gamma_magnitude < 0.01:  # Too low for effective scalping
+                return None
+
+            # Calculate moneyness (how close to ATM)
+            moneyness = stock_price / contract.strike_price
+            if contract.option_type == 'put':
+                moneyness = contract.strike_price / stock_price
+
+            # Prefer near ATM (0.95 to 1.05)
+            if moneyness < 0.90 or moneyness > 1.10:
+                return None
+
+            # Time to expiry - gamma peaks near expiration
+            time_to_expiry = self.calculator.calculate_time_to_expiry(contract.expiry_date)
+            days_to_expiry = time_to_expiry * 365
+
+            if days_to_expiry < 7 or days_to_expiry > 45:
+                return None
+
+            # Gamma/Theta ratio - want high gamma, low theta cost
+            theta_magnitude = abs(latest_price.theta)
+            if theta_magnitude == 0:
+                return None
+
+            gamma_theta_ratio = gamma_magnitude / theta_magnitude
+
+            if gamma_theta_ratio < 0.5:  # Theta cost too high relative to gamma
+                return None
+
+            # Check liquidity - critical for scalping
+            liquidity_score = self.calculate_liquidity_score(latest_price)
+            if liquidity_score < 50:  # Need good liquidity
+                return None
+
+            # Calculate score
+            base_score = 45
+
+            # Gamma contribution (0-20 points)
+            gamma_score = min(gamma_magnitude / 0.05 * 20, 20)
+            base_score += gamma_score
+
+            # Moneyness contribution (0-15 points)
+            # Closer to ATM = better
+            atm_distance = abs(1.0 - moneyness)
+            moneyness_score = 15 * (1 - atm_distance / 0.10)
+            base_score += max(moneyness_score, 0)
+
+            # Gamma/Theta ratio (0-10 points)
+            ratio_score = min(gamma_theta_ratio / 2.0 * 10, 10)
+            base_score += ratio_score
+
+            # Liquidity contribution (0-10 points)
+            base_score += min(liquidity_score / 10, 10)
+
+            mid_price = (latest_price.bid + latest_price.ask) / 2 if (latest_price.bid > 0 and latest_price.ask > 0) else latest_price.last_price
+
+            description = (
+                f"GAMMA SCALP: {contract.option_type.upper()} ${contract.strike_price:.0f} "
+                f"exp {contract.expiry_date.strftime('%m/%d')} "
+                f"(Gamma: {gamma_magnitude:.3f}, G/T Ratio: {gamma_theta_ratio:.1f}, "
+                f"Stock: ${stock_price:.2f}, Moneyness: {moneyness:.2%})"
+            )
+
+            return {
+                'contract_id': contract.id,
+                'opportunity_type': 'gamma_scalp',
+                'score': min(base_score, 100),
+                'description': description,
+                'metadata': {
+                    'gamma': latest_price.gamma,
+                    'theta': latest_price.theta,
+                    'gamma_theta_ratio': gamma_theta_ratio,
+                    'moneyness': moneyness,
+                    'days_to_expiry': days_to_expiry,
+                    'liquidity_score': liquidity_score
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Error detecting gamma scalping opportunity: {str(e)}")
+            return None
+
+    def detect_mispricing_opportunity(
+        self,
+        contract: OptionContract,
+        latest_price: OptionPrice,
+        stock_price: float
+    ) -> Optional[Dict]:
+        """
+        Enhanced mispricing detection with Greek validation
+
+        Compares market price to Black-Scholes theoretical value
+        Validates with Greek alignment
         """
         try:
             if not latest_price.implied_volatility or latest_price.implied_volatility <= 0:
@@ -107,6 +436,8 @@ class OpportunityDetector:
 
             # Calculate theoretical price
             time_to_expiry = self.calculator.calculate_time_to_expiry(contract.expiry_date)
+            if time_to_expiry <= 0:
+                return None
 
             theoretical_price = self.calculator.calculate_theoretical_price(
                 stock_price=stock_price,
@@ -119,270 +450,160 @@ class OpportunityDetector:
             if theoretical_price <= 0:
                 return None
 
-            # Calculate mid price
+            # Get market price
             mid_price = (latest_price.bid + latest_price.ask) / 2 if (latest_price.bid > 0 and latest_price.ask > 0) else latest_price.last_price
 
             if mid_price <= 0:
                 return None
 
-            # Calculate mispricing percentage
+            # Calculate mispricing
             mispricing_pct = (mid_price - theoretical_price) / theoretical_price
 
-            if abs(mispricing_pct) >= self.MISPRICING_THRESHOLD:
-                # Calculate score (0-100)
-                base_score = min(abs(mispricing_pct) / self.MISPRICING_THRESHOLD * 50, 50)
+            # Need significant mispricing
+            if abs(mispricing_pct) < self.MISPRICING_THRESHOLD:
+                return None
 
-                # Bonus for good liquidity (tight spread)
-                if latest_price.spread_percentage:
-                    if latest_price.spread_percentage < 5:
-                        base_score += 20
-                    elif latest_price.spread_percentage < 10:
-                        base_score += 10
+            # Check liquidity - critical for mispricing arbitrage
+            liquidity_score = self.calculate_liquidity_score(latest_price)
+            if liquidity_score < 40:  # Need reasonable liquidity
+                return None
 
-                # Bonus for volume
-                if latest_price.volume > 100:
-                    base_score += 15
-                elif latest_price.volume > 50:
-                    base_score += 10
+            # Calculate score
+            base_score = 50
 
-                opportunity_type = 'overpriced' if mispricing_pct > 0 else 'underpriced'
+            # Mispricing magnitude (0-30 points)
+            mispricing_score = min(abs(mispricing_pct) / 0.30 * 30, 30)
+            base_score += mispricing_score
 
-                description = (
-                    f"{contract.option_type.upper()} ${contract.strike_price} "
-                    f"exp {contract.expiry_date.strftime('%Y-%m-%d')} is "
-                    f"{opportunity_type} by {abs(mispricing_pct)*100:.1f}%. "
-                    f"Market: ${mid_price:.2f}, Theoretical: ${theoretical_price:.2f}"
-                )
+            # Liquidity contribution (0-20 points)
+            base_score += min(liquidity_score / 5, 20)
 
-                return {
-                    'contract_id': contract.id,
-                    'opportunity_type': opportunity_type,
-                    'score': min(base_score, 100),
-                    'description': description,
-                    'metadata': {
-                        'market_price': mid_price,
-                        'theoretical_price': theoretical_price,
-                        'mispricing_pct': mispricing_pct * 100
-                    }
+            opportunity_type = 'overpriced' if mispricing_pct > 0 else 'underpriced'
+            action = 'SELL' if mispricing_pct > 0 else 'BUY'
+
+            description = (
+                f"MISPRICING ({action}): {contract.option_type.upper()} "
+                f"${contract.strike_price:.0f} exp {contract.expiry_date.strftime('%m/%d')} "
+                f"is {abs(mispricing_pct)*100:.1f}% {opportunity_type}. "
+                f"Market: ${mid_price:.2f}, Fair: ${theoretical_price:.2f}"
+            )
+
+            return {
+                'contract_id': contract.id,
+                'opportunity_type': opportunity_type,
+                'score': min(base_score, 100),
+                'description': description,
+                'metadata': {
+                    'market_price': mid_price,
+                    'theoretical_price': theoretical_price,
+                    'mispricing_pct': mispricing_pct * 100,
+                    'liquidity_score': liquidity_score
                 }
-
-            return None
+            }
 
         except Exception as e:
             logger.error(f"Error detecting mispricing: {str(e)}")
             return None
 
-    def detect_iv_extremes(
+    def detect_high_delta_opportunity(
         self,
         symbol: Symbol,
-        contract: OptionContract,
-        latest_price: OptionPrice
-    ) -> Optional[Dict]:
-        """
-        Detect options with extreme IV rank (>80% or <20%)
-
-        Args:
-            symbol: Stock symbol
-            contract: Option contract
-            latest_price: Most recent option price data
-
-        Returns:
-            Opportunity dict if detected, None otherwise
-        """
-        try:
-            # Get recent IV analysis
-            recent_iv = self.db.query(IVAnalysis).filter(
-                IVAnalysis.symbol_id == symbol.id
-            ).order_by(IVAnalysis.timestamp.desc()).first()
-
-            if not recent_iv:
-                return None
-
-            iv_rank = recent_iv.iv_rank
-
-            if iv_rank >= self.IV_RANK_HIGH:
-                # High IV - potential sell opportunity
-                score = 40 + (iv_rank - self.IV_RANK_HIGH) / 20 * 30  # Scale from 40-70
-
-                # Bonus for high theta (good for selling)
-                if latest_price.theta and latest_price.theta < -0.05:
-                    score += 15
-
-                description = (
-                    f"{symbol.symbol} {contract.option_type.upper()} ${contract.strike_price} "
-                    f"has high IV rank of {iv_rank:.1f}% - potential premium selling opportunity. "
-                    f"Current IV: {recent_iv.current_iv*100:.1f}%"
-                )
-
-                return {
-                    'contract_id': contract.id,
-                    'opportunity_type': 'high_iv',
-                    'score': min(score, 100),
-                    'description': description,
-                    'metadata': {
-                        'iv_rank': iv_rank,
-                        'current_iv': recent_iv.current_iv * 100
-                    }
-                }
-
-            elif iv_rank <= self.IV_RANK_LOW:
-                # Low IV - potential buy opportunity
-                score = 40 + (self.IV_RANK_LOW - iv_rank) / 20 * 30
-
-                # Bonus for positive vega (benefits from IV increase)
-                if latest_price.vega and latest_price.vega > 0.1:
-                    score += 15
-
-                description = (
-                    f"{symbol.symbol} {contract.option_type.upper()} ${contract.strike_price} "
-                    f"has low IV rank of {iv_rank:.1f}% - potential cheap premium buying opportunity. "
-                    f"Current IV: {recent_iv.current_iv*100:.1f}%"
-                )
-
-                return {
-                    'contract_id': contract.id,
-                    'opportunity_type': 'low_iv',
-                    'score': min(score, 100),
-                    'description': description,
-                    'metadata': {
-                        'iv_rank': iv_rank,
-                        'current_iv': recent_iv.current_iv * 100
-                    }
-                }
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Error detecting IV extremes: {str(e)}")
-            return None
-
-    def detect_volume_anomaly(
-        self,
-        contract: OptionContract,
-        latest_price: OptionPrice
-    ) -> Optional[Dict]:
-        """
-        Detect unusual volume (>150% of average)
-
-        Args:
-            contract: Option contract
-            latest_price: Most recent option price data
-
-        Returns:
-            Opportunity dict if detected, None otherwise
-        """
-        try:
-            if latest_price.volume <= 0:
-                return None
-
-            avg_volume = self.calculate_average_volume(contract.id, days=10)
-
-            if avg_volume <= 0:
-                return None
-
-            volume_ratio = latest_price.volume / avg_volume
-
-            if volume_ratio >= self.VOLUME_MULTIPLIER:
-                score = 50 + min((volume_ratio - self.VOLUME_MULTIPLIER) * 20, 30)
-
-                # Bonus for open interest
-                if latest_price.open_interest and latest_price.open_interest > 500:
-                    score += 10
-
-                description = (
-                    f"{contract.option_type.upper()} ${contract.strike_price} "
-                    f"exp {contract.expiry_date.strftime('%Y-%m-%d')} has unusual volume. "
-                    f"Current: {latest_price.volume}, Avg: {avg_volume:.0f} ({volume_ratio:.1f}x)"
-                )
-
-                return {
-                    'contract_id': contract.id,
-                    'opportunity_type': 'unusual_volume',
-                    'score': min(score, 100),
-                    'description': description,
-                    'metadata': {
-                        'current_volume': latest_price.volume,
-                        'average_volume': avg_volume,
-                        'volume_ratio': volume_ratio
-                    }
-                }
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Error detecting volume anomaly: {str(e)}")
-            return None
-
-    def detect_high_time_value_near_expiry(
-        self,
         contract: OptionContract,
         latest_price: OptionPrice,
         stock_price: float
     ) -> Optional[Dict]:
         """
-        Detect high time value near expiration (potential theta decay play)
+        Detect directional opportunities with favorable delta
 
-        Args:
-            contract: Option contract
-            latest_price: Most recent option price data
-            stock_price: Current stock price
-
-        Returns:
-            Opportunity dict if detected, None otherwise
+        Criteria:
+        - High delta (>0.70) for stock replacement
+        - Low theta cost relative to delta
+        - Good liquidity
+        - Reasonable time to expiration
         """
         try:
-            time_to_expiry = self.calculator.calculate_time_to_expiry(contract.expiry_date)
-
-            # Only check if within 30 days of expiration
-            if time_to_expiry > (30 / 365.0):
+            if not latest_price.delta or not latest_price.theta:
                 return None
 
-            # Calculate intrinsic value
+            delta_magnitude = abs(latest_price.delta)
+
+            # Need high delta for stock replacement
+            if delta_magnitude < 0.65:
+                return None
+
+            # Calculate time to expiry
+            time_to_expiry = self.calculator.calculate_time_to_expiry(contract.expiry_date)
+            days_to_expiry = time_to_expiry * 365
+
+            # Prefer 30-120 days
+            if days_to_expiry < 20 or days_to_expiry > 180:
+                return None
+
+            # Check liquidity
+            liquidity_score = self.calculate_liquidity_score(latest_price)
+            if liquidity_score < 30:
+                return None
+
+            # Delta/Theta ratio
+            theta_magnitude = abs(latest_price.theta)
+            if theta_magnitude > 0:
+                delta_theta_ratio = delta_magnitude / theta_magnitude
+            else:
+                delta_theta_ratio = 0
+
+            # Calculate score
+            base_score = 45
+
+            # Delta contribution (0-20 points)
+            delta_score = (delta_magnitude - 0.65) / 0.35 * 20
+            base_score += min(delta_score, 20)
+
+            # Delta/Theta ratio (0-15 points)
+            if delta_theta_ratio > 15:
+                base_score += 15
+            elif delta_theta_ratio > 10:
+                base_score += 10
+            elif delta_theta_ratio > 5:
+                base_score += 5
+
+            # Liquidity (0-10 points)
+            base_score += min(liquidity_score / 10, 10)
+
+            # ITM/OTM status (0-10 points)
             intrinsic = self.calculator.calculate_intrinsic_value(
                 stock_price, contract.strike_price, contract.option_type
             )
-
             mid_price = (latest_price.bid + latest_price.ask) / 2 if (latest_price.bid > 0 and latest_price.ask > 0) else latest_price.last_price
 
-            if mid_price <= 0:
-                return None
+            if mid_price > 0:
+                itm_pct = intrinsic / mid_price if intrinsic > 0 else 0
+                if itm_pct > 0.7:  # Deeply ITM
+                    base_score += 10
+                elif itm_pct > 0.5:
+                    base_score += 5
 
-            time_value = mid_price - intrinsic
-            time_value_pct = (time_value / mid_price * 100) if mid_price > 0 else 0
+            description = (
+                f"HIGH DELTA: {symbol.symbol} {contract.option_type.upper()} "
+                f"${contract.strike_price:.0f} exp {contract.expiry_date.strftime('%m/%d')} "
+                f"(Delta: {delta_magnitude:.2f}, D/T: {delta_theta_ratio:.1f}, "
+                f"Stock: ${stock_price:.2f})"
+            )
 
-            # If time value is >50% of option price near expiration
-            if time_value_pct >= 50 and time_value > 0.50:
-                days_to_expiry = time_to_expiry * 365
-
-                score = 45 + min(time_value_pct - 50, 30)
-
-                # Bonus for high theta
-                if latest_price.theta and latest_price.theta < -0.05:
-                    score += 15
-
-                description = (
-                    f"{contract.option_type.upper()} ${contract.strike_price} "
-                    f"exp in {days_to_expiry:.0f} days has high time value "
-                    f"({time_value_pct:.1f}% of price, ${time_value:.2f}) - "
-                    f"potential theta decay opportunity"
-                )
-
-                return {
-                    'contract_id': contract.id,
-                    'opportunity_type': 'high_time_value',
-                    'score': min(score, 100),
-                    'description': description,
-                    'metadata': {
-                        'time_value': time_value,
-                        'time_value_pct': time_value_pct,
-                        'days_to_expiry': days_to_expiry
-                    }
+            return {
+                'contract_id': contract.id,
+                'opportunity_type': 'high_delta',
+                'score': min(base_score, 100),
+                'description': description,
+                'metadata': {
+                    'delta': latest_price.delta,
+                    'theta': latest_price.theta,
+                    'delta_theta_ratio': delta_theta_ratio,
+                    'days_to_expiry': days_to_expiry
                 }
-
-            return None
+            }
 
         except Exception as e:
-            logger.error(f"Error detecting high time value: {str(e)}")
+            logger.error(f"Error detecting high delta opportunity: {str(e)}")
             return None
 
     def scan_symbol_opportunities(
@@ -391,7 +612,7 @@ class OpportunityDetector:
         save_to_db: bool = True
     ) -> List[Dict]:
         """
-        Scan all opportunities for a specific symbol
+        Scan all opportunities for a specific symbol using enhanced detection
 
         Args:
             symbol: Symbol to scan
@@ -429,18 +650,23 @@ class OpportunityDetector:
                 if not latest_price:
                     continue
 
-                # Run all detection algorithms
+                # Run all enhanced detection algorithms
                 detectors = [
-                    lambda: self.detect_mispricing(contract, latest_price, stock_price),
-                    lambda: self.detect_iv_extremes(symbol, contract, latest_price),
-                    lambda: self.detect_volume_anomaly(contract, latest_price),
-                    lambda: self.detect_high_time_value_near_expiry(contract, latest_price, stock_price)
+                    lambda: self.detect_premium_selling_opportunity(symbol, contract, latest_price, stock_price),
+                    lambda: self.detect_premium_buying_opportunity(symbol, contract, latest_price, stock_price),
+                    lambda: self.detect_gamma_scalping_opportunity(contract, latest_price, stock_price),
+                    lambda: self.detect_mispricing_opportunity(contract, latest_price, stock_price),
+                    lambda: self.detect_high_delta_opportunity(symbol, contract, latest_price, stock_price),
                 ]
 
                 for detector in detectors:
-                    opp = detector()
-                    if opp and opp['score'] >= self.MIN_SCORE:
-                        opportunities.append(opp)
+                    try:
+                        opp = detector()
+                        if opp and opp['score'] >= self.MIN_SCORE:
+                            opportunities.append(opp)
+                    except Exception as e:
+                        logger.error(f"Detector error: {str(e)}")
+                        continue
 
             # Save to database if requested
             if save_to_db and opportunities:
@@ -529,28 +755,28 @@ class OpportunityDetector:
             self.db.rollback()
 
 
-def main():
-    """Test opportunity detection"""
+# Alias for backwards compatibility
+OpportunityDetector = EnhancedOpportunityDetector
+
+
+if __name__ == "__main__":
+    """Test enhanced opportunity detection"""
     from models import SessionLocal, create_tables
 
     create_tables()
     db = SessionLocal()
 
-    detector = OpportunityDetector(db)
+    detector = EnhancedOpportunityDetector(db)
 
-    print("Opportunity Detection Test")
-    print("-" * 60)
+    print("Enhanced Opportunity Detection Test")
+    print("=" * 80)
 
     # Scan all opportunities
     opportunities = detector.scan_all_opportunities(save_to_db=True)
 
     for symbol, opps in opportunities.items():
         print(f"\n{symbol}: {len(opps)} opportunities")
-        for opp in sorted(opps, key=lambda x: x['score'], reverse=True)[:3]:
-            print(f"  [{opp['score']:.0f}] {opp['opportunity_type']}: {opp['description'][:80]}...")
+        for opp in sorted(opps, key=lambda x: x['score'], reverse=True)[:5]:
+            print(f"  [{opp['score']:.0f}] {opp['opportunity_type']}: {opp['description']}")
 
     db.close()
-
-
-if __name__ == "__main__":
-    main()
