@@ -12,7 +12,7 @@ import pandas as pd
 import ivolatility as ivol
 from sqlalchemy.orm import Session
 
-from models import Symbol, StockPrice, OptionContract, OptionPrice, SessionLocal
+from models import Symbol, StockPrice, OptionContract, OptionPrice, IVAnalysis, SessionLocal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -471,6 +471,110 @@ class IVolatilityDataFetcher:
             db.rollback()
             return False
 
+    def calculate_and_store_iv_analysis(self, symbol: str) -> bool:
+        """
+        Calculate and store IV analysis (rank, percentile, HV) for a symbol
+
+        Args:
+            symbol: Stock symbol
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from calculations import OptionsCalculator
+            import numpy as np
+
+            db = self.get_session()
+            calculator = OptionsCalculator()
+
+            # Get symbol record
+            symbol_obj = db.query(Symbol).filter(Symbol.symbol == symbol.upper()).first()
+            if not symbol_obj:
+                logger.error(f"Symbol {symbol} not found in database")
+                return False
+
+            # Get recent stock prices for HV calculation
+            stock_prices = db.query(StockPrice).filter(
+                StockPrice.symbol_id == symbol_obj.id
+            ).order_by(StockPrice.timestamp.desc()).limit(60).all()
+
+            if len(stock_prices) < 20:
+                logger.warning(f"Not enough stock price history for {symbol} to calculate HV")
+                hv_20d = None
+                hv_30d = None
+            else:
+                # Calculate historical volatility
+                prices_df = pd.DataFrame([{
+                    'timestamp': sp.timestamp,
+                    'close': sp.close_price
+                } for sp in reversed(stock_prices)])
+
+                hv_20d = calculator.calculate_historical_volatility(
+                    prices_df['close'], period_days=20
+                )
+                hv_30d = calculator.calculate_historical_volatility(
+                    prices_df['close'], period_days=30
+                )
+
+            # Get all recent option prices to calculate average IV
+            recent_options = db.query(OptionPrice).join(
+                OptionContract, OptionPrice.contract_id == OptionContract.id
+            ).filter(
+                OptionContract.symbol_id == symbol_obj.id,
+                OptionPrice.implied_volatility > 0
+            ).order_by(OptionPrice.timestamp.desc()).limit(500).all()
+
+            if not recent_options:
+                logger.warning(f"No option data available for IV analysis for {symbol}")
+                return False
+
+            # Calculate average current IV
+            current_ivs = [op.implied_volatility for op in recent_options if op.implied_volatility > 0]
+            if not current_ivs:
+                return False
+
+            current_iv = np.mean(current_ivs)
+
+            # Get historical IV data for rank/percentile calculation
+            historical_iv_records = db.query(IVAnalysis).filter(
+                IVAnalysis.symbol_id == symbol_obj.id
+            ).order_by(IVAnalysis.timestamp.desc()).limit(365).all()
+
+            if len(historical_iv_records) < 10:
+                # Not enough history, use defaults
+                iv_rank = 50.0
+                iv_percentile = 50.0
+            else:
+                historical_iv_series = pd.Series([
+                    record.current_iv for record in historical_iv_records
+                ])
+                iv_rank = calculator.calculate_iv_rank(current_iv, historical_iv_series)
+                iv_percentile = calculator.calculate_iv_percentile(current_iv, historical_iv_series)
+
+            # Create IV analysis record
+            iv_analysis = IVAnalysis(
+                symbol_id=symbol_obj.id,
+                timestamp=datetime.now(),
+                current_iv=current_iv,
+                iv_rank=iv_rank,
+                iv_percentile=iv_percentile,
+                hv_20d=hv_20d,
+                hv_30d=hv_30d
+            )
+
+            db.add(iv_analysis)
+            db.commit()
+
+            logger.info(f"Calculated IV analysis for {symbol}: IV={current_iv*100:.1f}%, Rank={iv_rank:.1f}%")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error calculating IV analysis for {symbol}: {str(e)}")
+            if db:
+                db.rollback()
+            return False
+
     def update_all_symbols(self) -> Dict[str, bool]:
         """Update data for all active symbols in the watchlist"""
         try:
@@ -494,6 +598,8 @@ class IVolatilityDataFetcher:
                 options_data = self.fetch_options_data(symbol)
                 if options_data:
                     results[f"{symbol}_options"] = self.store_options_data(symbol, options_data)
+                    # Calculate IV analysis after storing options
+                    self.calculate_and_store_iv_analysis(symbol)
                 else:
                     results[f"{symbol}_options"] = False
 
