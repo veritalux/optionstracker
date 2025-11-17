@@ -7,6 +7,8 @@ const Opportunities = () => {
   const { fetchOpportunities } = useData();
   const [opportunities, setOpportunities] = useState([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [filter, setFilter] = useState({
     min_score: 50,
     opportunity_type: '',
@@ -19,8 +21,10 @@ const Opportunities = () => {
 
   const loadOpportunities = async () => {
     try {
+      setIsLoading(true);
+      setError(null);
       const params = {};
-      if (filter.min_score) params.min_score = filter.min_score;
+      if (filter.min_score !== null && filter.min_score !== undefined) params.min_score = filter.min_score;
       if (filter.opportunity_type) params.opportunity_type = filter.opportunity_type;
       if (filter.is_active !== undefined) params.is_active = filter.is_active;
 
@@ -28,6 +32,10 @@ const Opportunities = () => {
       setOpportunities(data);
     } catch (error) {
       console.error('Error loading opportunities:', error);
+      setError('Failed to load opportunities. Please check your connection and try again.');
+      setOpportunities([]); // Ensure empty state on error
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -88,8 +96,9 @@ const Opportunities = () => {
               type="number"
               min="0"
               max="100"
+              step="0.1"
               value={filter.min_score}
-              onChange={(e) => setFilter({ ...filter, min_score: parseInt(e.target.value) || 0 })}
+              onChange={(e) => setFilter({ ...filter, min_score: e.target.value === '' ? 0 : parseFloat(e.target.value) })}
               className="input-field"
             />
           </div>
@@ -131,18 +140,29 @@ const Opportunities = () => {
       <div className="card">
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-            {opportunities.length} Opportunities Found
+            {isLoading ? 'Loading...' : `${opportunities.length} Opportunities Found`}
           </h3>
           <button
             onClick={handleRefresh}
-            disabled={isScanning}
+            disabled={isScanning || isLoading}
             className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isScanning ? '⏳ Scanning...' : '🔄 Refresh'}
           </button>
         </div>
 
-        {opportunities.length > 0 ? (
+        {error && (
+          <div className="mb-4 p-4 bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 rounded-lg">
+            <p className="font-semibold">Error</p>
+            <p>{error}</p>
+          </div>
+        )}
+
+        {isLoading ? (
+          <div className="text-center text-gray-600 dark:text-gray-400 py-12">
+            <p className="text-lg">Loading opportunities...</p>
+          </div>
+        ) : opportunities.length > 0 ? (
           <div className="space-y-4">
             {opportunities.map((opp) => (
               <div

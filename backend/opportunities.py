@@ -694,7 +694,7 @@ class EnhancedOpportunityDetector:
         try:
             # Deactivate old opportunities
             if save_to_db:
-                self.db.query(TradingOpportunity).update({'is_active': False})
+                self.db.query(TradingOpportunity).update({TradingOpportunity.is_active: False})
                 self.db.commit()
 
             # Get all active symbols
