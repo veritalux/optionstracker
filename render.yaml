@@ -14,7 +14,7 @@ services:
           property: connectionString
       - key: FRONTEND_URL
         sync: false  # You'll set this manually after deploying frontend
-      - key: ALPHA_VANTAGE_API_KEY
+      - key: IVOLATILITY_API_KEY
         sync: false  # Set this in Render dashboard for security
     healthCheckPath: /
 
