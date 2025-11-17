@@ -226,6 +226,24 @@ class DataUpdateScheduler:
 
         logger.info("Completed quick update")
 
+    def continuous_update(self):
+        """
+        Continuous update (runs 24/7 every 20 minutes):
+        - Update stock prices
+        - Update options data
+        - Scan opportunities
+
+        This runs regardless of market hours to keep data fresh
+        for after-hours trading, pre-market, and analysis.
+        """
+        logger.info("Starting continuous 20-minute update")
+
+        self.update_stock_data()
+        self.update_options_data()
+        self.scan_opportunities()
+
+        logger.info("Completed continuous update")
+
     def start(self):
         """Start the scheduler with all jobs"""
         if self.is_running:
@@ -276,6 +294,15 @@ class DataUpdateScheduler:
             replace_existing=True
         )
 
+        # Continuous data refresh (every 20 minutes, 24/7)
+        self.scheduler.add_job(
+            self.continuous_update,
+            trigger=IntervalTrigger(minutes=20, timezone=ET),
+            id='continuous_refresh',
+            name='Continuous data and opportunities refresh (every 20 min)',
+            replace_existing=True
+        )
+
         # Start the scheduler
         self.scheduler.start()
         self.is_running = True
@@ -301,7 +328,7 @@ class DataUpdateScheduler:
         Manually trigger an update
 
         Args:
-            update_type: Type of update ('comprehensive', 'quick', 'stocks', 'options', 'greeks', 'opportunities')
+            update_type: Type of update ('comprehensive', 'quick', 'continuous', 'stocks', 'options', 'greeks', 'opportunities')
         """
         logger.info(f"Running manual {update_type} update")
 
@@ -309,6 +336,8 @@ class DataUpdateScheduler:
             self.comprehensive_update()
         elif update_type == 'quick':
             self.quick_update()
+        elif update_type == 'continuous':
+            self.continuous_update()
         elif update_type == 'stocks':
             self.update_stock_data()
         elif update_type == 'options':
