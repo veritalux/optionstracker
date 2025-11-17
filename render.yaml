@@ -17,10 +17,6 @@ services:
         sync: false  # You'll set this manually after deploying frontend
       - key: IVOLATILITY_API_KEY
         sync: false  # Set this in Render dashboard for security
-    healthCheck:
-      path: /
-      timeout: 30
-      interval: 3000  # Check every 5 minutes instead of constantly
 
   # Frontend Static Site
   - type: web
