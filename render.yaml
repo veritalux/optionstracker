@@ -21,7 +21,7 @@ services:
     healthCheck:
       path: /
       timeout: 30
-      interval: 300  # Check every 5 minutes instead of constantly
+      interval: 3000  # Check every 5 minutes instead of constantly
 
   # Frontend Static Site
   - type: web
