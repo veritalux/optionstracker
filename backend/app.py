@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 import logging
 import os
+import signal
+import asyncio
+from threading import Event
 
 from models import (
     get_db, create_tables, Symbol, StockPrice, OptionContract,
@@ -21,8 +24,12 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Options Tracker API", version="1.0.0")
 
-# Initialize scheduler
-scheduler = DataUpdateScheduler()
+# Graceful shutdown flag (must be created before scheduler)
+shutdown_event = Event()
+active_tasks = set()
+
+# Initialize scheduler with shutdown event
+scheduler = DataUpdateScheduler(shutdown_event=shutdown_event)
 
 # CORS middleware - allow frontend URL from environment
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -145,12 +152,38 @@ async def startup_event():
     scheduler.start()
     logger.info("Background scheduler started")
 
+    # Setup signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
 # Shutdown event
 @app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
+async def shutdown_handler():
+    """Cleanup on shutdown with grace period for active tasks"""
+    logger.info("Shutdown initiated - waiting for active tasks to complete")
+    shutdown_event.set()
+
+    # Stop scheduler from starting new tasks
     scheduler.stop()
     logger.info("Background scheduler stopped")
+
+    # Wait for active background tasks (with timeout)
+    max_wait = 30  # 30 seconds grace period
+    waited = 0
+    while active_tasks and waited < max_wait:
+        logger.info(f"Waiting for {len(active_tasks)} active tasks to complete...")
+        await asyncio.sleep(1)
+        waited += 1
+
+    if active_tasks:
+        logger.warning(f"Shutdown with {len(active_tasks)} tasks still running")
+    else:
+        logger.info("All tasks completed gracefully")
+
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM signal from Render"""
+    logger.info(f"Received signal {signum} - initiating graceful shutdown")
+    shutdown_event.set()
 
 # Health check endpoint
 @app.get("/")
@@ -485,29 +518,87 @@ async def get_dashboard_summary(db: Session = Depends(get_db)):
 # Background task functions
 async def fetch_symbol_data(symbol: str):
     """Background task to fetch data for a symbol"""
-    logger.info(f"Fetching data for {symbol}")
-    fetcher = DataFetcher()
+    task_id = f"fetch_{symbol}"
+    active_tasks.add(task_id)
 
-    # Fetch stock data
-    stock_data = fetcher.fetch_stock_data(symbol)
-    if stock_data is not None:
-        fetcher.store_stock_data(symbol, stock_data)
+    try:
+        if shutdown_event.is_set():
+            logger.warning(f"Skipping fetch for {symbol} - shutdown in progress")
+            return
 
-    # Fetch options data
-    options_data = fetcher.fetch_options_data(symbol)
-    if options_data:
-        fetcher.store_options_data(symbol, options_data)
+        logger.info(f"Fetching data for {symbol}")
+        fetcher = DataFetcher()
 
-    fetcher.close_session()
-    logger.info(f"Completed data fetch for {symbol} with real-time pricing and Greeks from IVolatility")
+        # Fetch stock data
+        if not shutdown_event.is_set():
+            stock_data = fetcher.fetch_stock_data(symbol)
+            if stock_data is not None:
+                fetcher.store_stock_data(symbol, stock_data)
+
+        # Fetch options data
+        if not shutdown_event.is_set():
+            options_data = fetcher.fetch_options_data(symbol)
+            if options_data:
+                fetcher.store_options_data(symbol, options_data)
+                # Calculate IV analysis
+                if not shutdown_event.is_set():
+                    fetcher.calculate_and_store_iv_analysis(symbol)
+
+        fetcher.close_session()
+        logger.info(f"Completed data fetch for {symbol} with real-time pricing and Greeks from IVolatility")
+    except Exception as e:
+        logger.error(f"Error in fetch_symbol_data for {symbol}: {str(e)}")
+    finally:
+        active_tasks.discard(task_id)
 
 async def fetch_all_symbols_data():
     """Background task to fetch data for all symbols"""
-    logger.info("Fetching data for all symbols")
-    fetcher = DataFetcher()
-    results = fetcher.update_all_symbols()
-    fetcher.close_session()
-    logger.info(f"Completed data fetch for all symbols: {results} with real-time pricing and Greeks from IVolatility")
+    task_id = "fetch_all"
+    active_tasks.add(task_id)
+
+    try:
+        if shutdown_event.is_set():
+            logger.warning("Skipping fetch_all - shutdown in progress")
+            return
+
+        logger.info("Fetching data for all symbols")
+        fetcher = DataFetcher()
+
+        # Get all symbols
+        from models import SessionLocal
+        db = SessionLocal()
+        symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
+        db.close()
+
+        # Fetch each symbol, checking for shutdown between each
+        for i, symbol_obj in enumerate(symbols):
+            if shutdown_event.is_set():
+                logger.warning(f"Stopping fetch_all at symbol {i+1}/{len(symbols)} due to shutdown")
+                break
+
+            symbol = symbol_obj.symbol
+            logger.info(f"Updating {symbol} ({i+1}/{len(symbols)})")
+
+            # Fetch stock data
+            stock_data = fetcher.fetch_stock_data(symbol)
+            if stock_data is not None:
+                fetcher.store_stock_data(symbol, stock_data)
+
+            # Fetch options data
+            if not shutdown_event.is_set():
+                options_data = fetcher.fetch_options_data(symbol)
+                if options_data:
+                    fetcher.store_options_data(symbol, options_data)
+                    # Calculate IV analysis
+                    if not shutdown_event.is_set():
+                        fetcher.calculate_and_store_iv_analysis(symbol)
+
+        fetcher.close_session()
+        logger.info(f"Completed data fetch for all symbols with real-time pricing and Greeks from IVolatility")
+    except Exception as e:
+        logger.error(f"Error in fetch_all_symbols_data: {str(e)}")
+    finally:
+        active_tasks.discard(task_id)
 
 if __name__ == "__main__":
     import uvicorn

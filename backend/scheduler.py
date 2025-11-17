@@ -6,6 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, time
+from threading import Event
 import logging
 import pytz
 
@@ -23,11 +24,16 @@ class DataUpdateScheduler:
     Manages scheduled data updates and opportunity scanning
     """
 
-    def __init__(self):
-        """Initialize scheduler"""
+    def __init__(self, shutdown_event: Event = None):
+        """Initialize scheduler
+
+        Args:
+            shutdown_event: Optional Event to signal graceful shutdown
+        """
         self.scheduler = BackgroundScheduler()
         self.scheduler.timezone = ET
         self.is_running = False
+        self.shutdown_event = shutdown_event or Event()
 
         # Market hours (9:30 AM - 4:00 PM ET)
         self.market_open = time(9, 30)
@@ -52,6 +58,10 @@ class DataUpdateScheduler:
 
     def update_stock_data(self):
         """Update stock price data for all watchlist symbols"""
+        if self.shutdown_event.is_set():
+            logger.warning("Skipping stock data update - shutdown in progress")
+            return
+
         logger.info("Starting scheduled stock data update")
 
         try:
@@ -61,6 +71,11 @@ class DataUpdateScheduler:
             symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
 
             for symbol in symbols:
+                # Check shutdown before each symbol
+                if self.shutdown_event.is_set():
+                    logger.warning(f"Stopping stock data update - shutdown in progress (processed {symbols.index(symbol)}/{len(symbols)} symbols)")
+                    break
+
                 try:
                     logger.info(f"Updating stock data for {symbol.symbol}")
 
@@ -80,13 +95,18 @@ class DataUpdateScheduler:
             fetcher.close_session()
             db.close()
 
-            logger.info("Completed scheduled stock data update")
+            if not self.shutdown_event.is_set():
+                logger.info("Completed scheduled stock data update")
 
         except Exception as e:
             logger.error(f"Error in stock data update task: {str(e)}")
 
     def update_options_data(self):
         """Update options chain data for all watchlist symbols"""
+        if self.shutdown_event.is_set():
+            logger.warning("Skipping options data update - shutdown in progress")
+            return
+
         logger.info("Starting scheduled options data update")
 
         try:
@@ -96,6 +116,11 @@ class DataUpdateScheduler:
             symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
 
             for symbol in symbols:
+                # Check shutdown before each symbol
+                if self.shutdown_event.is_set():
+                    logger.warning(f"Stopping options data update - shutdown in progress (processed {symbols.index(symbol)}/{len(symbols)} symbols)")
+                    break
+
                 try:
                     logger.info(f"Updating options data for {symbol.symbol}")
 
@@ -115,7 +140,8 @@ class DataUpdateScheduler:
             fetcher.close_session()
             db.close()
 
-            logger.info("Completed scheduled options data update")
+            if not self.shutdown_event.is_set():
+                logger.info("Completed scheduled options data update")
 
         except Exception as e:
             logger.error(f"Error in options data update task: {str(e)}")
@@ -133,6 +159,10 @@ class DataUpdateScheduler:
 
     def scan_opportunities(self):
         """Scan for trading opportunities"""
+        if self.shutdown_event.is_set():
+            logger.warning("Skipping opportunity scan - shutdown in progress")
+            return
+
         logger.info("Starting opportunity scan")
 
         try:
