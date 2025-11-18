@@ -18,6 +18,23 @@ services:
       - key: IVOLATILITY_API_KEY
         sync: false  # Set this in Render dashboard for security
 
+  # Background Worker Service (handles scheduled data refreshes)
+  - type: worker
+    name: options-tracker-worker
+    runtime: python
+    plan: starter
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && python worker.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: options-tracker-db
+          property: connectionString
+      - key: IVOLATILITY_API_KEY
+        sync: false  # Set this in Render dashboard for security
+
   # Frontend Static Site
   - type: web
     name: options-tracker-frontend
