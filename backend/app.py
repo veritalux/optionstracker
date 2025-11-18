@@ -414,7 +414,7 @@ async def get_opportunities(
 
     if is_active is not None:
         query = query.filter(TradingOpportunity.is_active == is_active)
-    if min_score:
+    if min_score is not None:
         query = query.filter(TradingOpportunity.score >= min_score)
     if opportunity_type:
         query = query.filter(TradingOpportunity.opportunity_type == opportunity_type)
