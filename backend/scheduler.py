@@ -73,10 +73,10 @@ class DataUpdateScheduler:
 
             symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
 
-            for symbol in symbols:
+            for i, symbol in enumerate(symbols):
                 # Check shutdown before each symbol
                 if self.shutdown_event.is_set():
-                    logger.warning(f"Stopping stock data update - shutdown in progress (processed {symbols.index(symbol)}/{len(symbols)} symbols)")
+                    logger.warning(f"Stopping stock data update - shutdown in progress (processed {i}/{len(symbols)} symbols)")
                     break
 
                 try:
@@ -94,6 +94,12 @@ class DataUpdateScheduler:
                 except Exception as e:
                     logger.error(f"Error updating {symbol.symbol}: {str(e)}")
                     continue
+
+                # Add delay between symbols to avoid API rate limits
+                # Skip delay for last symbol
+                if i < len(symbols) - 1 and not self.shutdown_event.is_set():
+                    logger.debug(f"Waiting 2 seconds before next symbol to avoid rate limits...")
+                    time.sleep(2)
 
             if not self.shutdown_event.is_set():
                 logger.info("Completed scheduled stock data update")
@@ -131,10 +137,10 @@ class DataUpdateScheduler:
 
             symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
 
-            for symbol in symbols:
+            for i, symbol in enumerate(symbols):
                 # Check shutdown before each symbol
                 if self.shutdown_event.is_set():
-                    logger.warning(f"Stopping options data update - shutdown in progress (processed {symbols.index(symbol)}/{len(symbols)} symbols)")
+                    logger.warning(f"Stopping options data update - shutdown in progress (processed {i}/{len(symbols)} symbols)")
                     break
 
                 try:
@@ -152,6 +158,12 @@ class DataUpdateScheduler:
                 except Exception as e:
                     logger.error(f"Error updating options for {symbol.symbol}: {str(e)}")
                     continue
+
+                # Add delay between symbols to avoid API rate limits
+                # Skip delay for last symbol
+                if i < len(symbols) - 1 and not self.shutdown_event.is_set():
+                    logger.debug(f"Waiting 3 seconds before next symbol to avoid rate limits...")
+                    time.sleep(3)
 
             if not self.shutdown_event.is_set():
                 logger.info("Completed scheduled options data update")
@@ -233,6 +245,12 @@ class DataUpdateScheduler:
         logger.info("=" * 60)
 
         self.update_stock_data()
+
+        # Add delay between update phases to avoid rate limits
+        if not self.shutdown_event.is_set():
+            logger.debug("Waiting 5 seconds between update phases...")
+            time.sleep(5)
+
         self.update_options_data()
         self.calculate_greeks()
         self.scan_opportunities()
@@ -273,6 +291,12 @@ class DataUpdateScheduler:
         logger.info("Starting continuous 20-minute update")
 
         self.update_stock_data()
+
+        # Add delay between update phases to avoid rate limits
+        if not self.shutdown_event.is_set():
+            logger.debug("Waiting 5 seconds between update phases...")
+            time.sleep(5)
+
         self.update_options_data()
         self.scan_opportunities()
 
