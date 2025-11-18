@@ -17,10 +17,17 @@ const OptionsChain = () => {
   const [selectedExpiry, setSelectedExpiry] = useState('');
   const [optionType, setOptionType] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [contractsWithPrices, setContractsWithPrices] = useState([]);
 
   useEffect(() => {
     loadData();
   }, [symbol]);
+
+  useEffect(() => {
+    if (contracts.length > 0 && selectedExpiry) {
+      loadContractsWithPrices();
+    }
+  }, [selectedExpiry, optionType, contracts]);
 
   const loadData = async () => {
     setLoading(true);
@@ -47,6 +54,57 @@ const OptionsChain = () => {
     }
   };
 
+  const loadContractsWithPrices = async () => {
+    setLoading(true);
+    try {
+      // Filter contracts by selected expiry and option type
+      let filtered = contracts.filter((c) => c.expiry_date === selectedExpiry);
+
+      if (optionType !== 'all') {
+        filtered = filtered.filter((c) => c.option_type === optionType);
+      }
+
+      // Load latest price for each contract
+      const contractsWithPriceData = await Promise.all(
+        filtered.map(async (contract) => {
+          try {
+            const prices = await api.getOptionPrices(contract.id, { limit: 1 });
+            const latestPrice = prices && prices.length > 0 ? prices[0] : null;
+            return {
+              contract,
+              priceData: latestPrice,
+              timestamp: latestPrice ? new Date(latestPrice.timestamp) : null,
+            };
+          } catch (error) {
+            console.error(`Error loading price for contract ${contract.id}:`, error);
+            return {
+              contract,
+              priceData: null,
+              timestamp: null,
+            };
+          }
+        })
+      );
+
+      // Sort by timestamp (most recent first), then by strike price
+      contractsWithPriceData.sort((a, b) => {
+        if (a.timestamp && b.timestamp) {
+          return b.timestamp - a.timestamp; // Most recent first
+        }
+        if (a.timestamp && !b.timestamp) return -1;
+        if (!a.timestamp && b.timestamp) return 1;
+        // Fallback to strike price if no timestamps
+        return a.contract.strike_price - b.contract.strike_price;
+      });
+
+      setContractsWithPrices(contractsWithPriceData);
+    } catch (error) {
+      console.error('Error loading contracts with prices:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -65,16 +123,6 @@ const OptionsChain = () => {
 
   // Get unique expiry dates
   const expiryDates = [...new Set(contracts.map((c) => c.expiry_date))].sort();
-
-  // Filter contracts
-  let filteredContracts = contracts.filter((c) => c.expiry_date === selectedExpiry);
-
-  if (optionType !== 'all') {
-    filteredContracts = filteredContracts.filter((c) => c.option_type === optionType);
-  }
-
-  // Sort by strike price
-  filteredContracts.sort((a, b) => a.strike_price - b.strike_price);
 
   return (
     <div className="space-y-8">
@@ -134,10 +182,10 @@ const OptionsChain = () => {
       {/* Options Table */}
       <div className="card">
         <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
-          {filteredContracts.length} Contracts
+          {contractsWithPrices.length} Contracts (sorted by latest update)
         </h3>
 
-        {filteredContracts.length > 0 ? (
+        {contractsWithPrices.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700">
@@ -150,6 +198,9 @@ const OptionsChain = () => {
                   </th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
                     Expiry
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
+                    Last Updated
                   </th>
                   <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
                     Last Price
@@ -175,8 +226,13 @@ const OptionsChain = () => {
                 </tr>
               </thead>
               <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {filteredContracts.map((contract) => (
-                  <ContractRow key={contract.id} contract={contract} />
+                {contractsWithPrices.map((item) => (
+                  <ContractRow
+                    key={item.contract.id}
+                    contract={item.contract}
+                    priceData={item.priceData}
+                    timestamp={item.timestamp}
+                  />
                 ))}
               </tbody>
             </table>
@@ -194,40 +250,33 @@ const OptionsChain = () => {
   );
 };
 
-const ContractRow = ({ contract }) => {
-  const [priceData, setPriceData] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadPriceData();
-  }, [contract.id]);
-
-  const loadPriceData = async () => {
-    try {
-      const prices = await api.getOptionPrices(contract.id, { limit: 1 });
-      if (prices && prices.length > 0) {
-        setPriceData(prices[0]);
-      }
-    } catch (error) {
-      console.error('Error loading price data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
+const ContractRow = ({ contract, priceData, timestamp }) => {
+  if (!priceData) {
     return (
       <tr className="table-row">
-        <td colSpan="10" className="px-3 py-3 text-center text-sm text-gray-500">
-          Loading...
+        <td colSpan="11" className="px-3 py-3 text-center text-sm text-gray-500">
+          No price data available
         </td>
       </tr>
     );
   }
 
-  if (!priceData) {
-    return null;
-  }
+  // Format timestamp for display
+  const formatTimestamp = (ts) => {
+    if (!ts) return 'N/A';
+    const date = new Date(ts);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return formatDate(ts);
+  };
 
   return (
     <tr className="table-row">
@@ -247,6 +296,9 @@ const ContractRow = ({ contract }) => {
       </td>
       <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
         {priceData.expiry_date ? formatDate(priceData.expiry_date) : formatDate(contract.expiry_date)}
+      </td>
+      <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
+        {formatTimestamp(timestamp)}
       </td>
       <td className="px-3 py-3 whitespace-nowrap text-right text-gray-900 dark:text-white">
         {formatCurrency(priceData.last_price)}
