@@ -1,6 +1,7 @@
 {
   "name": "options-tracker-frontend",
   "version": "1.0.0",
+  "type": "module",
   "description": "Options Trading Analytics Dashboard Frontend",
   "private": true,
   "dependencies": {
