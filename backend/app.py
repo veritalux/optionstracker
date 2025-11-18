@@ -15,7 +15,6 @@ from models import (
     OptionPrice, IVAnalysis, TradingOpportunity, UserWatchlist
 )
 from data_fetcher import DataFetcher
-from scheduler import DataUpdateScheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,12 +23,16 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Options Tracker API", version="1.0.0")
 
-# Graceful shutdown flag (must be created before scheduler)
+# Graceful shutdown flag
 shutdown_event = Event()
 active_tasks = set()
 
-# Initialize scheduler with shutdown event
-scheduler = DataUpdateScheduler(shutdown_event=shutdown_event)
+# NOTE: Scheduler is now handled by a separate background worker service
+# (see backend/worker.py). The API no longer runs scheduled tasks to ensure:
+# - API responsiveness isn't affected by data refresh operations
+# - Scheduled jobs continue even if API restarts
+# - Independent scaling of worker and API services
+# Manual trigger endpoints (e.g., /api/update-all) are still available below.
 
 # CORS middleware - allow frontend URL from environment
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -144,13 +147,10 @@ class OpportunityResponse(BaseModel):
 # Startup event
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database and start scheduler on startup"""
+    """Initialize database on startup"""
     create_tables()
     logger.info("Database tables created/verified")
-
-    # Start the background scheduler
-    scheduler.start()
-    logger.info("Background scheduler started")
+    logger.info("API ready - background worker handles scheduled tasks")
 
     # Setup signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, handle_sigterm)
@@ -162,10 +162,6 @@ async def shutdown_handler():
     """Cleanup on shutdown with grace period for active tasks"""
     logger.info("Shutdown initiated - waiting for active tasks to complete")
     shutdown_event.set()
-
-    # Stop scheduler from starting new tasks
-    scheduler.stop()
-    logger.info("Background scheduler stopped")
 
     # Wait for active background tasks (with timeout)
     max_wait = 30  # 30 seconds grace period
