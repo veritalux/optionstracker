@@ -22,7 +22,7 @@ import sys
 import os
 
 from scheduler import DataUpdateScheduler
-from models import create_tables
+from models import create_tables, SessionLocal, Symbol, UserWatchlist
 
 # Configure logging
 logging.basicConfig(
@@ -33,6 +33,54 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def migrate_existing_symbols_to_watchlist():
+    """
+    One-time migration: Create UserWatchlist entries for existing Symbol records.
+
+    This ensures backward compatibility when upgrading from the old architecture
+    where only Symbol.is_active was used to determine what to track.
+    """
+    logger.info("Running watchlist migration check...")
+    db = None
+    try:
+        db = SessionLocal()
+
+        # Find symbols that don't have a watchlist entry
+        symbols_without_watchlist = db.query(Symbol).outerjoin(
+            UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+        ).filter(
+            Symbol.is_active == True,
+            UserWatchlist.id == None  # No watchlist entry exists
+        ).all()
+
+        if not symbols_without_watchlist:
+            logger.info("✓ All symbols have watchlist entries")
+            return
+
+        logger.info(f"Found {len(symbols_without_watchlist)} symbols without watchlist entries")
+
+        # Create watchlist entries for these symbols
+        for symbol in symbols_without_watchlist:
+            watchlist_entry = UserWatchlist(
+                symbol_id=symbol.id,
+                is_active=True,
+                added_at=symbol.created_at or datetime.utcnow()
+            )
+            db.add(watchlist_entry)
+            logger.info(f"  ✓ Created watchlist entry for {symbol.symbol}")
+
+        db.commit()
+        logger.info(f"✓ Migration complete: {len(symbols_without_watchlist)} watchlist entries created")
+
+    except Exception as e:
+        logger.error(f"✗ Migration failed: {e}")
+        if db:
+            db.rollback()
+    finally:
+        if db:
+            db.close()
 
 # Graceful shutdown event
 shutdown_event = Event()
@@ -63,6 +111,12 @@ def main():
         logger.error(f"✗ Failed to connect to database: {e}")
         logger.error("Exiting...")
         sys.exit(1)
+
+    # Run migration to ensure existing symbols have watchlist entries
+    try:
+        migrate_existing_symbols_to_watchlist()
+    except Exception as e:
+        logger.warning(f"Migration check failed (non-fatal): {e}")
 
     # Initialize scheduler
     logger.info("Initializing data update scheduler...")
