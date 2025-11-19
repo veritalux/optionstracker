@@ -103,8 +103,8 @@ class DataUpdateScheduler:
                 # Add delay between symbols to avoid API rate limits
                 # Skip delay for last symbol
                 if i < len(symbols) - 1 and not self.shutdown_event.is_set():
-                    logger.debug(f"Waiting 2 seconds before next symbol to avoid rate limits...")
-                    time.sleep(2)
+                    logger.debug(f"Waiting 5 seconds before next symbol to avoid rate limits...")
+                    time.sleep(5)
 
             if not self.shutdown_event.is_set():
                 logger.info("Completed scheduled stock data update")
@@ -170,8 +170,8 @@ class DataUpdateScheduler:
                 # Add delay between symbols to avoid API rate limits
                 # Skip delay for last symbol
                 if i < len(symbols) - 1 and not self.shutdown_event.is_set():
-                    logger.debug(f"Waiting 3 seconds before next symbol to avoid rate limits...")
-                    time.sleep(3)
+                    logger.debug(f"Waiting 5 seconds before next symbol to avoid rate limits...")
+                    time.sleep(5)
 
             if not self.shutdown_event.is_set():
                 logger.info("Completed scheduled options data update")
@@ -305,24 +305,36 @@ class DataUpdateScheduler:
         logger.info("Completed comprehensive update")
         logger.info("=" * 60)
 
-    def quick_update(self):
+    def market_hours_update(self):
         """
-        Quick intraday update:
+        Market hours update (runs every 15 minutes during trading hours):
         - Update stock prices
-        - Calculate Greeks for active positions
-        - Quick opportunity scan
+        - Update options data
+        - Scan opportunities (only if new data exists)
+
+        This is the primary update schedule that keeps all data fresh during active trading.
         """
         if not self.is_market_hours():
-            logger.info("Market is closed, skipping quick update")
+            logger.info("Market is closed, skipping market hours update")
             return
 
-        logger.info("Starting quick intraday update")
+        logger.info("=" * 60)
+        logger.info("Starting market hours update (15-min refresh)")
+        logger.info("=" * 60)
 
         self.update_stock_data()
-        self.calculate_greeks()
+
+        # Add delay between update phases to avoid rate limits
+        if not self.shutdown_event.is_set():
+            logger.debug("Waiting 5 seconds between update phases...")
+            time.sleep(5)
+
+        self.update_options_data()
         self.scan_opportunities()
 
-        logger.info("Completed quick update")
+        logger.info("=" * 60)
+        logger.info("Completed market hours update")
+        logger.info("=" * 60)
 
     def continuous_update(self):
         """
@@ -357,55 +369,25 @@ class DataUpdateScheduler:
         logger.info("Starting data update scheduler")
 
         # Market hours updates (every 15 minutes, 9:30 AM - 4:00 PM ET, Mon-Fri)
+        # This is the ONLY scheduled job - keeps data fresh during active trading hours
         self.scheduler.add_job(
-            self.quick_update,
+            self.market_hours_update,
             trigger=CronTrigger(
                 day_of_week='mon-fri',
                 hour='9-16',
                 minute='*/15',
                 timezone=ET
             ),
-            id='quick_update',
-            name='Quick intraday update (every 15 min during market hours)',
+            id='market_hours_update',
+            name='Market hours data refresh (every 15 min, 9:30 AM - 4:00 PM ET)',
             replace_existing=True
         )
 
-        # End-of-day comprehensive update (4:30 PM ET, Mon-Fri)
-        self.scheduler.add_job(
-            self.comprehensive_update,
-            trigger=CronTrigger(
-                day_of_week='mon-fri',
-                hour=16,
-                minute=30,
-                timezone=ET
-            ),
-            id='eod_update',
-            name='End-of-day comprehensive update',
-            replace_existing=True
-        )
-
-        # Weekend historical analysis (Saturday 10:00 AM ET)
-        self.scheduler.add_job(
-            self.scan_opportunities,
-            trigger=CronTrigger(
-                day_of_week='sat',
-                hour=10,
-                minute=0,
-                timezone=ET
-            ),
-            id='weekend_analysis',
-            name='Weekend opportunity review',
-            replace_existing=True
-        )
-
-        # Continuous data refresh (every 20 minutes, 24/7)
-        self.scheduler.add_job(
-            self.continuous_update,
-            trigger=IntervalTrigger(minutes=20, timezone=ET),
-            id='continuous_refresh',
-            name='Continuous data and opportunities refresh (every 20 min)',
-            replace_existing=True
-        )
+        logger.info("Scheduled job: Market hours update every 15 minutes (9:30 AM - 4:00 PM ET, Mon-Fri)")
+        logger.info("  - Updates stock prices")
+        logger.info("  - Updates options contracts and prices")
+        logger.info("  - Scans for opportunities (only if new data)")
+        logger.info("  - 5-second delays between API calls")
 
         # Start the scheduler
         self.scheduler.start()
