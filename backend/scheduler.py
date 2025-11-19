@@ -5,15 +5,15 @@ Uses APScheduler to fetch data during market hours and analyze opportunities
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime, time
+from datetime import datetime, time as dt_time
 from threading import Event
 import logging
 import pytz
+import time
 
 from models import SessionLocal, create_tables, Symbol, OptionContract, OptionPrice, UserWatchlist
 from data_fetcher import DataFetcher
 from opportunities import OpportunityDetector
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ class DataUpdateScheduler:
         self.shutdown_event = shutdown_event or Event()
 
         # Market hours (9:30 AM - 4:00 PM ET)
-        self.market_open = time(9, 30)
-        self.market_close = time(16, 0)
+        self.market_open = dt_time(9, 30)
+        self.market_close = dt_time(16, 0)
 
     def is_market_hours(self) -> bool:
         """
