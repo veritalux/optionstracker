@@ -15,6 +15,7 @@ from models import (
     OptionPrice, IVAnalysis, TradingOpportunity, UserWatchlist
 )
 from data_fetcher import DataFetcher
+from opportunities import OpportunityDetector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -497,7 +498,7 @@ async def get_symbol_opportunities(
 @app.post("/api/opportunities/scan")
 async def scan_opportunities(background_tasks: BackgroundTasks):
     """Trigger a manual scan for trading opportunities"""
-    background_tasks.add_task(scheduler.scan_opportunities)
+    background_tasks.add_task(scan_opportunities_task)
     return {"message": "Opportunity scan started"}
 
 # Data update endpoints
@@ -649,6 +650,33 @@ async def fetch_all_symbols_data():
         logger.info(f"Completed data fetch for all symbols with real-time pricing and Greeks from IVolatility")
     except Exception as e:
         logger.error(f"Error in fetch_all_symbols_data: {str(e)}")
+    finally:
+        active_tasks.discard(task_id)
+
+async def scan_opportunities_task():
+    """Background task to scan for trading opportunities"""
+    task_id = "scan_opportunities"
+    active_tasks.add(task_id)
+
+    try:
+        if shutdown_event.is_set():
+            logger.warning("Skipping opportunity scan - shutdown in progress")
+            return
+
+        logger.info("Starting opportunity scan")
+
+        from models import SessionLocal
+        db = SessionLocal()
+        detector = OpportunityDetector(db)
+
+        opportunities = detector.scan_all_opportunities(save_to_db=True)
+
+        total_count = sum(len(opps) for opps in opportunities.values())
+
+        logger.info(f"Completed opportunity scan: {total_count} opportunities found")
+        db.close()
+    except Exception as e:
+        logger.error(f"Error in scan_opportunities_task: {str(e)}")
     finally:
         active_tasks.discard(task_id)
 
