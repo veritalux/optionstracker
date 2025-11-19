@@ -10,9 +10,10 @@ from threading import Event
 import logging
 import pytz
 
-from models import SessionLocal, create_tables, Symbol, OptionContract, OptionPrice
+from models import SessionLocal, create_tables, Symbol, OptionContract, OptionPrice, UserWatchlist
 from data_fetcher import DataFetcher
 from opportunities import OpportunityDetector
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,10 @@ class DataUpdateScheduler:
             db = SessionLocal()
             fetcher = DataFetcher()
 
-            symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
+            # Query symbols from active watchlist entries
+            symbols = db.query(Symbol).join(
+                UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+            ).filter(UserWatchlist.is_active == True).all()
 
             for i, symbol in enumerate(symbols):
                 # Check shutdown before each symbol
@@ -135,7 +139,10 @@ class DataUpdateScheduler:
             db = SessionLocal()
             fetcher = DataFetcher()
 
-            symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
+            # Query symbols from active watchlist entries
+            symbols = db.query(Symbol).join(
+                UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+            ).filter(UserWatchlist.is_active == True).all()
 
             for i, symbol in enumerate(symbols):
                 # Check shutdown before each symbol

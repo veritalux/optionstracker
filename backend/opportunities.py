@@ -18,7 +18,7 @@ import logging
 
 from models import (
     Symbol, StockPrice, OptionContract, OptionPrice,
-    IVAnalysis, TradingOpportunity
+    IVAnalysis, TradingOpportunity, UserWatchlist
 )
 from calculations import OptionsCalculator
 
@@ -697,8 +697,10 @@ class EnhancedOpportunityDetector:
                 self.db.query(TradingOpportunity).update({'is_active': False})
                 self.db.commit()
 
-            # Get all active symbols
-            symbols = self.db.query(Symbol).filter(Symbol.is_active == True).all()
+            # Get all symbols from active watchlist entries
+            symbols = self.db.query(Symbol).join(
+                UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+            ).filter(UserWatchlist.is_active == True).all()
 
             for symbol in symbols:
                 opportunities = self.scan_symbol_opportunities(symbol, save_to_db=False)

@@ -12,7 +12,7 @@ import pandas as pd
 import ivolatility as ivol
 from sqlalchemy.orm import Session
 
-from models import Symbol, StockPrice, OptionContract, OptionPrice, IVAnalysis, SessionLocal
+from models import Symbol, StockPrice, OptionContract, OptionPrice, IVAnalysis, SessionLocal, UserWatchlist
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -579,7 +579,10 @@ class IVolatilityDataFetcher:
         """Update data for all active symbols in the watchlist"""
         try:
             db = self.get_session()
-            symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
+            # Query symbols from active watchlist entries
+            symbols = db.query(Symbol).join(
+                UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+            ).filter(UserWatchlist.is_active == True).all()
 
             results = {}
 

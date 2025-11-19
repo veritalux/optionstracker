@@ -195,28 +195,60 @@ async def create_symbol(
     db: Session = Depends(get_db)
 ):
     """Add a new symbol to the watchlist"""
-    fetcher = DataFetcher()
+    symbol_upper = symbol_data.symbol.upper()
 
-    success = fetcher.add_symbol_to_watchlist(
-        symbol_data.symbol,
-        symbol_data.company_name
-    )
-
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to add symbol")
-
-    # Get the created symbol
-    symbol = db.query(Symbol).filter(
-        Symbol.symbol == symbol_data.symbol.upper()
-    ).first()
+    # Check if symbol already exists
+    symbol = db.query(Symbol).filter(Symbol.symbol == symbol_upper).first()
 
     if not symbol:
-        raise HTTPException(status_code=404, detail="Symbol not found after creation")
+        # Create new symbol
+        company_name = symbol_data.company_name or symbol_upper
+        symbol = Symbol(
+            symbol=symbol_upper,
+            company_name=company_name,
+            sector="",
+            is_active=True
+        )
+        db.add(symbol)
+        db.commit()
+        db.refresh(symbol)
+        logger.info(f"Created new symbol: {symbol_upper}")
+
+    # Check if already in watchlist
+    existing_watchlist = db.query(UserWatchlist).filter(
+        UserWatchlist.symbol_id == symbol.id,
+        UserWatchlist.is_active == True
+    ).first()
+
+    if existing_watchlist:
+        logger.info(f"Symbol {symbol_upper} already in active watchlist")
+        return symbol
+
+    # Check for deactivated watchlist entry to reactivate
+    deactivated_entry = db.query(UserWatchlist).filter(
+        UserWatchlist.symbol_id == symbol.id,
+        UserWatchlist.is_active == False
+    ).first()
+
+    if deactivated_entry:
+        # Reactivate existing entry
+        deactivated_entry.is_active = True
+        deactivated_entry.added_at = datetime.utcnow()
+        db.commit()
+        logger.info(f"Reactivated watchlist entry for {symbol_upper}")
+    else:
+        # Create new watchlist entry
+        watchlist_entry = UserWatchlist(
+            symbol_id=symbol.id,
+            is_active=True
+        )
+        db.add(watchlist_entry)
+        db.commit()
+        logger.info(f"Added {symbol_upper} to watchlist")
 
     # Schedule background data fetch
-    background_tasks.add_task(fetch_symbol_data, symbol_data.symbol.upper())
+    background_tasks.add_task(fetch_symbol_data, symbol_upper)
 
-    fetcher.close_session()
     return symbol
 
 @app.get("/api/symbols", response_model=List[SymbolResponse])
@@ -224,11 +256,15 @@ async def get_symbols(
     is_active: Optional[bool] = True,
     db: Session = Depends(get_db)
 ):
-    """Get all symbols in the watchlist"""
-    query = db.query(Symbol)
+    """Get all symbols in the user's watchlist"""
+    # Query symbols through the watchlist join
+    query = db.query(Symbol).join(
+        UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+    )
 
     if is_active is not None:
-        query = query.filter(Symbol.is_active == is_active)
+        # Filter by watchlist active status (not symbol active status)
+        query = query.filter(UserWatchlist.is_active == is_active)
 
     symbols = query.all()
     return symbols
@@ -247,7 +283,7 @@ async def get_symbol(symbol: str, db: Session = Depends(get_db)):
 
 @app.delete("/api/symbols/{symbol}")
 async def delete_symbol(symbol: str, db: Session = Depends(get_db)):
-    """Deactivate a symbol (soft delete)"""
+    """Remove a symbol from the watchlist (preserves historical data)"""
     symbol_obj = db.query(Symbol).filter(
         Symbol.symbol == symbol.upper()
     ).first()
@@ -255,10 +291,20 @@ async def delete_symbol(symbol: str, db: Session = Depends(get_db)):
     if not symbol_obj:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    symbol_obj.is_active = False
-    db.commit()
+    # Deactivate watchlist entry (not the symbol itself)
+    watchlist_entry = db.query(UserWatchlist).filter(
+        UserWatchlist.symbol_id == symbol_obj.id,
+        UserWatchlist.is_active == True
+    ).first()
 
-    return {"message": f"Symbol {symbol} deactivated"}
+    if not watchlist_entry:
+        raise HTTPException(status_code=404, detail="Symbol not in active watchlist")
+
+    watchlist_entry.is_active = False
+    db.commit()
+    logger.info(f"Removed {symbol} from watchlist (historical data preserved)")
+
+    return {"message": f"Symbol {symbol} removed from watchlist"}
 
 # Stock price endpoints
 @app.get("/api/symbols/{symbol}/prices", response_model=List[StockPriceResponse])
@@ -474,8 +520,10 @@ async def update_all_symbols(background_tasks: BackgroundTasks):
 @app.get("/api/dashboard")
 async def get_dashboard_summary(db: Session = Depends(get_db)):
     """Get dashboard summary data"""
-    # Count active symbols
-    symbol_count = db.query(Symbol).filter(Symbol.is_active == True).count()
+    # Count symbols in active watchlist
+    symbol_count = db.query(Symbol).join(
+        UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+    ).filter(UserWatchlist.is_active == True).count()
 
     # Count active opportunities
     opportunity_count = db.query(TradingOpportunity).filter(
@@ -566,10 +614,12 @@ async def fetch_all_symbols_data():
         logger.info("Fetching data for all symbols")
         fetcher = DataFetcher()
 
-        # Get all symbols
+        # Get all symbols from active watchlist
         from models import SessionLocal
         db = SessionLocal()
-        symbols = db.query(Symbol).filter(Symbol.is_active == True).all()
+        symbols = db.query(Symbol).join(
+            UserWatchlist, Symbol.id == UserWatchlist.symbol_id
+        ).filter(UserWatchlist.is_active == True).all()
         db.close()
 
         # Fetch each symbol, checking for shutdown between each
