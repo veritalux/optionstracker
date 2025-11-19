@@ -11,9 +11,10 @@ import logging
 import pytz
 import time
 
-from models import SessionLocal, create_tables, Symbol, OptionContract, OptionPrice, UserWatchlist
+from models import SessionLocal, create_tables, Symbol, OptionContract, OptionPrice, UserWatchlist, TradingOpportunity
 from data_fetcher import DataFetcher
 from opportunities import OpportunityDetector
+from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
@@ -202,18 +203,56 @@ class DataUpdateScheduler:
         logger.info("Greeks calculation skipped - Greeks provided by IVolatility API")
         return
 
+    def has_new_option_data(self, db):
+        """
+        Check if there are new option prices since the last opportunity scan.
+
+        Returns True if:
+        - There are option prices but no opportunities yet (first run)
+        - The most recent option price is newer than the most recent opportunity
+
+        This prevents unnecessary scans when no new data has been fetched.
+        """
+        # Get the most recent option price timestamp
+        latest_price = db.query(func.max(OptionPrice.timestamp)).scalar()
+
+        if not latest_price:
+            logger.debug("No option prices in database, skipping scan")
+            return False
+
+        # Get the most recent opportunity timestamp
+        latest_opportunity = db.query(func.max(TradingOpportunity.timestamp)).scalar()
+
+        if not latest_opportunity:
+            # No opportunities exist yet, but we have prices - should scan
+            logger.info("No existing opportunities found, will perform initial scan")
+            return True
+
+        # Compare timestamps
+        if latest_price > latest_opportunity:
+            logger.info(f"New option data detected (latest price: {latest_price}, latest scan: {latest_opportunity})")
+            return True
+        else:
+            logger.info(f"No new option data since last scan (latest price: {latest_price}, latest scan: {latest_opportunity})")
+            return False
+
     def scan_opportunities(self):
-        """Scan for trading opportunities"""
+        """Scan for trading opportunities (only if new option data exists)"""
         if self.shutdown_event.is_set():
             logger.warning("Skipping opportunity scan - shutdown in progress")
             return
-
-        logger.info("Starting opportunity scan")
 
         db = None
 
         try:
             db = SessionLocal()
+
+            # Check if there's new option data to analyze
+            if not self.has_new_option_data(db):
+                logger.info("Skipping opportunity scan - no new option data")
+                return
+
+            logger.info("Starting opportunity scan")
             detector = OpportunityDetector(db)
 
             opportunities = detector.scan_all_opportunities(save_to_db=True)
