@@ -8,17 +8,18 @@ Base = declarative_base()
 
 class Symbol(Base):
     __tablename__ = "symbols"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, unique=True, index=True)
     company_name = Column(String)
     sector = Column(String)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)  # Whether symbol is still tradeable (not delisted)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     stock_prices = relationship("StockPrice", back_populates="symbol_rel")
     option_contracts = relationship("OptionContract", back_populates="symbol_rel")
+    watchlist_entries = relationship("UserWatchlist", back_populates="symbol_rel")
 
 class StockPrice(Base):
     __tablename__ = "stock_prices"
@@ -107,11 +108,14 @@ class TradingOpportunity(Base):
     
 class UserWatchlist(Base):
     __tablename__ = "user_watchlists"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    symbol_id = Column(Integer, ForeignKey("symbols.id"))
+    symbol_id = Column(Integer, ForeignKey("symbols.id"), index=True)
     added_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, index=True)  # Whether this watchlist entry is active
+
+    # Relationship
+    symbol_rel = relationship("Symbol", back_populates="watchlist_entries")
 
 # Database setup
 # Use PostgreSQL in production (Render), SQLite for local development
